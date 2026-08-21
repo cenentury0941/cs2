@@ -12,6 +12,9 @@ import omni.kit.app
 from .simulation import Simulation
 from .ui import CrowdAgentsWindow
 
+# Match crowd.sim.kit rate limit; used if the update event omits dt.
+_DEFAULT_DT = 1.0 / 30.0
+
 
 class CrowdAgentsExtension(omni.ext.IExt):
     """Owns the Crowd Agents window and drives the simulation update loop."""
@@ -28,9 +31,28 @@ class CrowdAgentsExtension(omni.ext.IExt):
         )
 
     def _on_update(self, event) -> None:
-        dt = event.payload.get("dt", 0.0) if event.payload else 0.0
+        dt = self._read_dt(event)
         self._simulation.update(dt)
         self._window.refresh_status()
+
+    @staticmethod
+    def _read_dt(event) -> float:
+        """Kit update payloads vary; never allow a zero dt while simulating."""
+        try:
+            payload = event.payload
+            if payload is None:
+                return _DEFAULT_DT
+            # carb.dictionary often supports [] but not dict.get reliably
+            try:
+                value = payload["dt"]
+            except Exception:  # noqa: BLE001
+                value = payload.get("dt") if hasattr(payload, "get") else None
+            if value is None:
+                return _DEFAULT_DT
+            dt = float(value)
+            return dt if dt > 0.0 else _DEFAULT_DT
+        except Exception:  # noqa: BLE001
+            return _DEFAULT_DT
 
     def on_shutdown(self) -> None:
         carb.log_info("[crowd.agents] Extension shutdown")

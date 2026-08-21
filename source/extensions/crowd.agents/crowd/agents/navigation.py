@@ -25,6 +25,7 @@ class NavigationSystem:
 
     def __init__(self) -> None:
         self._interface = None
+        self._random_counter = 0
 
     def _acquire(self):
         if self._interface is not None:
@@ -118,9 +119,11 @@ class NavigationSystem:
         navmesh = inav.get_navmesh()
         if navmesh is None:
             return None
+        self._random_counter += 1
+        seed = 1000 + self._random_counter * 97
         try:
             try:
-                inav.set_random_seed(seed_key, 42)
+                inav.set_random_seed(seed_key, seed)
             except Exception:  # noqa: BLE001
                 pass
             try:
@@ -157,21 +160,26 @@ class NavigationSystem:
             return []
 
     def set_destination(self, agent: "Agent", destination: Vec3) -> bool:
-        """Plan a path from the agent to destination and store waypoints."""
+        """Plan a path on the NavMesh. Agent position is feet; do not sink the capsule."""
+        # Snap from near the feet (drop any accidental center height first)
         start = self.snap_to_navmesh(agent.position) or agent.position
         end = self.snap_to_navmesh(destination) or destination
         waypoints = self.query_path(start, end)
         if len(waypoints) < 2:
-            # Fallback: direct line if bake/query fails but we still want motion
             waypoints = [start, end]
             carb.log_warn(
                 "[crowd.agents] No NavMesh path — using direct line fallback"
             )
+        # Keep feet on the mesh; USD sync lifts to capsule center.
         agent.position = start
         agent.destination = end
         agent.waypoints = waypoints
         agent.waypoint_index = 1 if len(waypoints) > 1 else 0
         agent.perception["at_destination"] = False
+        carb.log_info(
+            f"[crowd.agents] Path planned: {len(waypoints)} pts "
+            f"from {start} -> {end}"
+        )
         return True
 
     def apply_intent(self, agent: "Agent", intent: str, dt: float) -> None:
@@ -190,9 +198,8 @@ class NavigationSystem:
         idx = min(agent.waypoint_index, len(agent.waypoints) - 1)
         target = agent.waypoints[idx]
         pos = agent.position
-        dx = target[0] - pos[0]
-        dy = target[1] - pos[1]
-        dz = target[2] - pos[2]
+        # Horizontal distance only — NavMesh Y/Z can differ slightly from feet height
+        dx, dy, dz = target[0] - pos[0], target[1] - pos[1], target[2] - pos[2]
         dist = math.sqrt(dx * dx + dy * dy + dz * dz)
 
         if dist <= ARRIVAL_EPSILON:
@@ -205,6 +212,6 @@ class NavigationSystem:
             return
 
         step = min(agent.speed_mps * dt, dist)
-        inv = step / dist
+        inv = step / dist if dist > 1e-8 else 0.0
         agent.position = (pos[0] + dx * inv, pos[1] + dy * inv, pos[2] + dz * inv)
         agent.perception["at_destination"] = False

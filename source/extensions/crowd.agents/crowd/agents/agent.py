@@ -16,7 +16,11 @@ Vec3 = Tuple[float, float, float]
 
 @dataclass
 class Agent:
-    """One simulated person: state in Python, pose mirrored to a USD prim."""
+    """One simulated person.
+
+    ``position`` is the **feet** point on the NavMesh. USD sync lifts by
+    ``height / 2`` so the capsule center stands on the floor.
+    """
 
     agent_id: str
     prim_path: str
@@ -53,6 +57,10 @@ class Agent:
             "at_destination": False,
         }
 
+    def center_position(self) -> Vec3:
+        """Capsule/visual center derived from feet + height."""
+        return _lift(self.position, self.height * 0.5)
+
     def sync_to_usd(self) -> None:
         stage = omni.usd.get_context().get_stage()
         if stage is None:
@@ -72,4 +80,17 @@ class Agent:
             xformable.ClearXformOpOrder()
             translate_op = xformable.AddTranslateOp()
 
-        translate_op.Set(Gf.Vec3d(*self.position))
+        translate_op.Set(Gf.Vec3d(*self.center_position()))
+
+
+def _lift(floor_point: Vec3, amount: float) -> Vec3:
+    stage = omni.usd.get_context().get_stage()
+    up = "Y"
+    if stage is not None:
+        meta = stage.GetMetadata("upAxis")
+        if meta is not None:
+            up = str(meta)
+    x, y, z = floor_point
+    if up == "Z":
+        return (x, y, z + amount)
+    return (x, y + amount, z)

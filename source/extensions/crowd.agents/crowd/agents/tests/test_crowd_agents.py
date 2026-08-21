@@ -34,9 +34,10 @@ class Test(omni.kit.test.AsyncTestCase):
         agent = Agent(
             agent_id="walker",
             prim_path="/World/CrowdAgents/Walker",
-            position=(0.0, 0.85, 0.0),
+            position=(0.0, 0.0, 0.0),
+            height=1.7,
         )
-        agent.waypoints = [(0.0, 0.85, 0.0), (2.0, 0.85, 0.0)]
+        agent.waypoints = [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
         agent.waypoint_index = 1
         agent.speed_mps = 1.0
 
@@ -44,6 +45,9 @@ class Test(omni.kit.test.AsyncTestCase):
         self.assertGreater(agent.position[0], 0.0)
         self.assertLess(agent.position[0], 2.0)
         self.assertFalse(agent.perception.get("at_destination"))
+        # Feet stay on ground; visual center is lifted
+        center = agent.center_position()
+        self.assertAlmostEqual(center[1], 0.85, places=2)
 
     async def test_window_smoke_buttons_exist(self):
         spawn = ui_test.find(f"{WINDOW_TITLE}//Frame/**/Button[*].text=='Spawn Agent'")

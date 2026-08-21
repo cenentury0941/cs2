@@ -246,24 +246,23 @@ class Simulation:
         up = self._up_axis(stage)
         capsule.CreateAxisAttr(UsdGeom.Tokens.y if up == "Y" else UsdGeom.Tokens.z)
 
-        # Position is capsule center; snap point is on the floor
-        center = self._lift_point(spawn, height * 0.5)
-        xformable = UsdGeom.Xformable(capsule.GetPrim())
-        xformable.ClearXformOpOrder()
-        xformable.AddTranslateOp().Set(Gf.Vec3d(*center))
-
+        # Logical position = feet on NavMesh; sync_to_usd lifts to capsule center.
         agent = Agent(
             agent_id="Agent_001",
             prim_path=AGENT_PRIM_PATH,
-            position=center,
+            position=spawn,
             goal="destination",
             height=height,
         )
-        agent.spawn_position = center
+        agent.spawn_position = spawn
+        xformable = UsdGeom.Xformable(capsule.GetPrim())
+        xformable.ClearXformOpOrder()
+        xformable.AddTranslateOp().Set(Gf.Vec3d(*agent.center_position()))
+        agent.sync_to_usd()
         self._agents = [agent]
 
         self._status = (
-            f"Spawned {agent.agent_id} at ({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) "
+            f"Spawned {agent.agent_id} feet=({spawn[0]:.1f}, {spawn[1]:.1f}, {spawn[2]:.1f}) "
             "— set destination, then Run."
         )
         self._log(self._status)
@@ -273,26 +272,21 @@ class Simulation:
             self._status = "Spawn an agent first."
             return
 
+        agent = self._agents[0]
         dest = self._navigation.random_point(seed_key="crowd.dest")
         if dest is None:
-            # Offset from current position as a simple fallback
-            agent = self._agents[0]
             dest = self._offset_on_ground(agent.position, 5.0, 0.0)
             snapped = self._navigation.snap_to_navmesh(dest)
             dest = snapped or dest
 
-        agent = self._agents[0]
-        # Destination on floor; agent path uses center — lift end for path query from center
-        floor_dest = dest
-        dest_center = self._lift_point(floor_dest, agent.height * 0.5)
-        # Re-plan from current position using floor-level snaps inside navigation
-        ok = self._navigation.set_destination(agent, dest_center)
+        # Keep planning in feet space (NavMesh), never write floor into capsule center.
+        ok = self._navigation.set_destination(agent, dest)
         agent.goal = "destination"
         agent.sync_to_usd()
         if ok:
-            d = agent.destination or dest_center
+            d = agent.destination or dest
             self._status = (
-                f"Destination set ({d[0]:.1f}, {d[1]:.1f}, {d[2]:.1f}) — "
+                f"Destination ({d[0]:.1f}, {d[1]:.1f}, {d[2]:.1f}) — "
                 f"{len(agent.waypoints)} waypoints. Press Run."
             )
         else:
