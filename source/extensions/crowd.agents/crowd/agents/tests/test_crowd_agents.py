@@ -5,7 +5,11 @@ import omni.kit.test
 import omni.kit.ui_test as ui_test
 from pxr import Gf
 
-from crowd.agents.ai import RuleBasedDecisionEngine
+from crowd.agents.ai import (
+    RuleBasedDecisionEngine,
+    agent_to_slm_dict,
+    normalize_decision,
+)
 from crowd.agents.agent import Agent
 from crowd.agents.navigation import NavigationSystem
 from crowd.agents.scene import SEAT_PATTERN, SpawnZone, point_in_spawn_horizontal, sample_in_spawn
@@ -50,6 +54,68 @@ class Test(omni.kit.test.AsyncTestCase):
 
         agent.perception["fire_visible"] = True
         self.assertEqual(brain.decide(agent), "EXIT")
+
+    async def test_agent_to_slm_dict_shape(self):
+        agent = Agent(
+            agent_id="Agent_001",
+            prim_path="/World/CrowdAgents/Agent_001",
+            goal="Seat_003",
+            assigned_seat="Seat_003",
+            intent="WALK",
+        )
+        agent.perception.update(
+            {
+                "fire_visible": False,
+                "smoke_visible": False,
+                "seat_known": True,
+                "at_destination": False,
+                "nearest_exit": "Exit_A",
+                "exits": ["Exit_A", "Exit_B"],
+            }
+        )
+        row = agent_to_slm_dict(agent)
+        self.assertEqual(row["id"], "Agent_001")
+        self.assertEqual(row["goal"], "Seat_003")
+        self.assertEqual(row["assigned_seat"], "Seat_003")
+        self.assertEqual(row["intent"], "WALK")
+        self.assertEqual(
+            set(row["perception"].keys()),
+            {
+                "fire_visible",
+                "smoke_visible",
+                "seat_known",
+                "at_destination",
+                "nearest_exit",
+                "exits",
+            },
+        )
+        self.assertEqual(row["perception"]["nearest_exit"], "Exit_A")
+        self.assertEqual(row["perception"]["exits"], ["Exit_A", "Exit_B"])
+
+    async def test_normalize_decision_fallback_on_bad_intent(self):
+        rules = RuleBasedDecisionEngine()
+        agent = Agent(
+            agent_id="Agent_002",
+            prim_path="/World/CrowdAgents/Agent_002",
+            goal="Seat_001",
+            assigned_seat="Seat_001",
+        )
+        agent.perception["at_destination"] = False
+        bad = normalize_decision(
+            {"id": "Agent_002", "intent": "DANCE", "destination": None},
+            rules,
+            agent,
+        )
+        self.assertEqual(bad.intent, "GO_TO_SEAT")
+        self.assertEqual(bad.destination, "Seat_001")
+
+        good = normalize_decision(
+            {"id": "Agent_002", "intent": "IDLE", "destination": "Seat_001"},
+            rules,
+            agent,
+        )
+        self.assertEqual(good.intent, "IDLE")
+        self.assertIsNone(good.destination)
 
     async def test_fire_in_view_fov_and_range(self):
         from crowd.agents.fire import fire_in_view

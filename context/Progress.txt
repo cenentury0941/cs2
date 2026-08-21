@@ -103,6 +103,15 @@ Phase 6a — Hosted SLM service (DONE; Mac + fleet/CUDA updates on main)
 - Worker fleet + round-robin load balancer (default 4 workers)
 - CUDA /v1/decide batches agents in one forward; AWS deploy helpers
 
+Phase 6b — Wire Kit to hosted SLM (DONE in extension; verify on LAN/AWS)
+- RemoteSLMDecisionEngine HTTP client in crowd.agents (batch /v1/decide)
+- ~1 Hz Kit-side scheduler (async thread; rules between ticks / on failure)
+- Tiny perception JSON from sim (exits, smoke, seat known — not raw mesh)
+- Crowd Sim UI: Use hosted SLM + URL + Check Ready
+- Fallback: RuleBasedDecisionEngine when /ready fails or HTTP errors
+- Laptop (4 GB VRAM) does not host the SLM
+- SLM HTTP request/response append log: context/slm_exchange_log.txt
+  (override with SLM_LOG_PATH; gitignored)
 
 Repo / tooling notes
 --------------------
@@ -110,7 +119,7 @@ Repo / tooling notes
 - Extension: source/extensions/crowd.agents/
 - SLM service: services/slm/ (venv gitignored)
 - Context: Progress.txt, Crowd_Simulation_Project_Notes.txt,
-  SLM_LAN_Connection.txt
+  SLM_LAN_Connection.txt, Omniverse_SLM_Technical_Flow.txt
 - Agent brief: agent.md (Omniverse vs SLM labour split; gitignored locally)
 - Scene naming contract for tests:
   - Spawn (plane)
@@ -122,13 +131,9 @@ Repo / tooling notes
 Pending
 -------
 
-Phase 6b — Wire Kit to hosted SLM + scale
-- RemoteSLMDecisionEngine HTTP client in crowd.agents (batch /v1/decide)
-- Keep DecisionEngine.decide(agent) → intent; ~1 Hz scheduler on Kit side
-- Tiny perception JSON from sim (exits, smoke, seat known — not raw mesh)
-- Multi-instance workers + load distribution (server-side largely done in 6a)
-- AWS/Ubuntu CUDA worker behind the same HTTP contract (deploy helpers exist)
-- Laptop (4 GB VRAM) must not host the SLM
+Phase 6b verification (optional remaining)
+- End-to-end Run with Mac LAN or AWS CUDA worker (Check Ready → Use SLM → Run)
+- Multi-instance workers already server-side; Kit talks to LB :8080 only
 
 Phase 7 — Hackathon deploy + polish
 - Deploy same extension + assets to AWS g6e.xlarge or NVIDIA Brev
@@ -145,5 +150,6 @@ Also still useful (asset / authoring)
 
 Suggested next action
 ---------------------
-Phase 6b: RemoteSLMDecisionEngine in crowd.agents — batch POST /v1/decide
-over LAN (context/SLM_LAN_Connection.txt) or AWS; ~1 Hz Kit-side scheduler.
+Verify Phase 6b in-app: enable Use hosted SLM, set URL from
+context/SLM_LAN_Connection.txt (or AWS tunnel), Check Ready, Spawn, Run.
+Then Phase 7 polish / deploy.

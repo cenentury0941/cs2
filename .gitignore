@@ -48,3 +48,6 @@ services/slm/.venv/
 services/slm/.venv-cuda/
 **/__pycache__/
 .env
+
+# Growing SLM HTTP exchange dump (local reference)
+context/slm_exchange_log.txt

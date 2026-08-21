@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import math
 import random
+import threading
+import time
 from typing import Dict, List, Optional, Tuple
 
 import carb
@@ -14,7 +16,14 @@ import omni.usd
 from pxr import Gf, UsdGeom
 
 from .agent import Agent
-from .ai import DecisionEngine, RuleBasedDecisionEngine
+from .ai import (
+    DEFAULT_SLM_BASE_URL,
+    AgentDecision,
+    DecisionEngine,
+    RemoteSLMDecisionEngine,
+    RuleBasedDecisionEngine,
+    agent_to_slm_dict,
+)
 from .fire import FIRE_FOV_DEG, FIRE_VIEW_RANGE_M, FireSystem
 from .inspect import AgentInspectPicker, pick_frontmost_along_ray
 from .navigation import NavigationSystem
@@ -30,6 +39,8 @@ AGENT_HEIGHT = 1.7
 AGENT_RADIUS = 0.35
 # Soft safety cap only — events persist for the whole run until spawn/reset.
 MAX_STATE_EVENTS = 10000
+# High-frequency motion, low-frequency SLM reasoning (~1 Hz).
+SLM_DECIDE_INTERVAL_S = 1.0
 Vec3 = Tuple[float, float, float]
 
 
@@ -52,7 +63,22 @@ class Simulation:
         self._agents: List[Agent] = []
         self._navigation = NavigationSystem()
         self._fire = FireSystem()
-        self._brain: DecisionEngine = RuleBasedDecisionEngine()
+        self._rules = RuleBasedDecisionEngine()
+        self._brain: DecisionEngine = self._rules
+        self._slm = RemoteSLMDecisionEngine(
+            base_url=DEFAULT_SLM_BASE_URL, fallback=self._rules
+        )
+        self._use_slm = False
+        self._brain_intent: Dict[str, str] = {}
+        self._brain_destination: Dict[str, Optional[str]] = {}
+        self._slm_interval_s = SLM_DECIDE_INTERVAL_S
+        self._last_slm_wall_t = 0.0
+        self._slm_tick = 0
+        self._slm_lock = threading.Lock()
+        self._slm_inflight = False
+        self._slm_pending: Optional[List[AgentDecision]] = None
+        self._slm_pending_error: Optional[str] = None
+        self._slm_mode_label = "rules"
         self._status = (
             "Ready — bake NavMesh, Spawn Agents (uses Spawn + Seat_XXX), Run."
         )
@@ -73,6 +99,58 @@ class Simulation:
                 self._on_stage_event, name="crowd.agents.agent_inspect"
             )
         )
+
+    @property
+    def use_slm(self) -> bool:
+        return self._use_slm
+
+    @property
+    def slm_base_url(self) -> str:
+        return self._slm.base_url
+
+    @property
+    def slm_status_text(self) -> str:
+        if not self._use_slm:
+            return "Decision: rules (local)"
+        if self._slm_inflight:
+            return f"Decision: SLM tick {self._slm_tick} in flight…"
+        err = self._slm_pending_error or self._slm.last_error
+        if err:
+            return f"Decision: SLM fallback — {err}"
+        return f"Decision: SLM ({self._slm_mode_label}) @ {self._slm.base_url}"
+
+    def set_use_slm(self, enabled: bool) -> None:
+        self._use_slm = bool(enabled)
+        self._brain = self._slm if self._use_slm else self._rules
+        if not self._use_slm:
+            self._slm_mode_label = "rules"
+            self._status = "Using rule-based decisions (local)."
+        else:
+            self._slm_mode_label = "remote"
+            self._last_slm_wall_t = 0.0  # allow immediate first tick on Run
+            self._status = (
+                f"Using hosted SLM @ {self._slm.base_url} "
+                f"(~{self._slm_interval_s:.0f} Hz batch). Check Ready before Run."
+            )
+        self._log(self._status)
+
+    def set_slm_base_url(self, base_url: str) -> None:
+        url = (base_url or "").strip() or DEFAULT_SLM_BASE_URL
+        self._slm.set_base_url(url)
+        self._status = f"SLM base URL → {self._slm.base_url}"
+        self._log(self._status)
+
+    def probe_slm_ready(self) -> bool:
+        ok = self._slm.check_ready()
+        if ok:
+            self._status = f"SLM ready @ {self._slm.base_url}"
+        else:
+            self._status = (
+                f"SLM not ready @ {self._slm.base_url}: "
+                f"{self._slm.last_error or 'unknown'}"
+            )
+        self._log(self._status)
+        return ok
 
     @property
     def status_text(self) -> str:
@@ -219,6 +297,12 @@ class Simulation:
         self._selected_agent_id = None
         self._hovered_agent_id = None
         self._agent_watch.clear()
+        self._brain_intent.clear()
+        self._brain_destination.clear()
+        self._last_slm_wall_t = 0.0
+        with self._slm_lock:
+            self._slm_pending = None
+            self._slm_pending_error = None
         self._state_events.clear()
         self._sim_time = 0.0
         self._running = False
@@ -329,14 +413,29 @@ class Simulation:
         up = scene_util.up_axis()
         self._fire.tick(dt)
 
+        if not self._exits:
+            self._exits = scene_util.find_exits()
+        exit_names = [e.name for e in self._exits]
+
         for agent in self._agents:
             visible = self._fire.is_visible_to(agent, up=up)
             agent.perception["fire_visible"] = visible
             agent.perception["smoke_visible"] = visible
+            agent.perception["seat_known"] = bool(
+                agent.assigned_seat or agent.perception.get("seat_known")
+            )
+            agent.perception["exits"] = exit_names
+            nearest = scene_util.nearest_exit(agent.position, self._exits)
+            agent.perception["nearest_exit"] = nearest.name if nearest else None
             if visible:
                 saw_fire += 1
 
-            brain_intent = self._brain.decide(agent)
+        self._apply_pending_slm_results()
+        if self._use_slm:
+            self._maybe_request_slm_batch()
+
+        for agent in self._agents:
+            brain_intent, preferred_dest = self._resolve_brain_decision(agent)
             intent = brain_intent
 
             if intent == "EXIT":
@@ -347,7 +446,7 @@ class Simulation:
                     agent.perception["at_destination"] = False
                     agent.waypoints = []
                     agent.waypoint_index = 0
-                self._ensure_exit_destination(agent)
+                self._ensure_exit_destination(agent, preferred=preferred_dest)
                 if agent.destination is not None and not agent.perception.get("at_destination"):
                     if not agent.waypoints:
                         self._navigation.set_destination(agent, agent.destination)
@@ -387,6 +486,8 @@ class Simulation:
         else:
             walking = total - seated
             self._status = f"Running — {seated}/{total} seated, {walking} walking"
+        if self._use_slm:
+            self._status = f"{self._status} | {self.slm_status_text}"
 
     def set_running(self, running: bool) -> None:
         if running and not self._agents:
@@ -395,6 +496,16 @@ class Simulation:
             return
         if running:
             self._exits = scene_util.find_exits()
+            if self._use_slm:
+                if not self._slm.check_ready():
+                    self._status = (
+                        f"SLM not ready — using rules until /ready succeeds "
+                        f"({self._slm.last_error or 'check URL / Mac server'})."
+                    )
+                    self._log(self._status)
+                    self._apply_rule_decisions_to_cache()
+                else:
+                    self._last_slm_wall_t = 0.0  # fire first batch ASAP
             for agent in self._agents:
                 # Already evacuating (saw fire earlier) — repath to exit
                 if self._fire.is_active and (agent.goal or "").startswith("Exit"):
@@ -421,6 +532,12 @@ class Simulation:
     def reset(self) -> None:
         self._running = False
         self._fire.reset()
+        self._brain_intent.clear()
+        self._brain_destination.clear()
+        self._last_slm_wall_t = 0.0
+        with self._slm_lock:
+            self._slm_pending = None
+            self._slm_pending_error = None
         for agent in self._agents:
             agent.reset()
             agent.waypoints = []
@@ -461,6 +578,12 @@ class Simulation:
                 self._selected_agent_id = None
                 self._hovered_agent_id = None
                 self._agent_watch.clear()
+                self._brain_intent.clear()
+                self._brain_destination.clear()
+                self._last_slm_wall_t = 0.0
+                with self._slm_lock:
+                    self._slm_pending = None
+                    self._slm_pending_error = None
                 self._state_events.clear()
                 self._sim_time = 0.0
                 clear_fov_wireframe()
@@ -664,6 +787,12 @@ class Simulation:
         self._selected_agent_id = None
         self._hovered_agent_id = None
         self._agent_watch.clear()
+        self._brain_intent.clear()
+        self._brain_destination.clear()
+        self._last_slm_wall_t = 0.0
+        with self._slm_lock:
+            self._slm_pending = None
+            self._slm_pending_error = None
         self._state_events.clear()
         self._sim_time = 0.0
         clear_fov_wireframe()
@@ -811,10 +940,19 @@ class Simulation:
             return
         self.trigger_fire_at((0.0, 0.0, 0.0))
 
-    def _ensure_exit_destination(self, agent: Agent) -> None:
+    def _ensure_exit_destination(
+        self, agent: Agent, preferred: Optional[str] = None
+    ) -> None:
         if not self._exits:
             self._exits = scene_util.find_exits()
-        exit_info = scene_util.nearest_exit(agent.position, self._exits)
+        exit_info = None
+        if preferred:
+            for candidate in self._exits:
+                if candidate.name == preferred:
+                    exit_info = candidate
+                    break
+        if exit_info is None:
+            exit_info = scene_util.nearest_exit(agent.position, self._exits)
         if exit_info is None:
             return
         exit_pos = self._navigation.snap_to_navmesh(exit_info.position) or exit_info.position
@@ -823,6 +961,96 @@ class Simulation:
             agent.destination = exit_pos
             agent.waypoints = []
             agent.waypoint_index = 0
+
+    def _resolve_brain_decision(self, agent: Agent) -> Tuple[str, Optional[str]]:
+        """High-level intent (+ optional destination id) for this frame."""
+        if self._use_slm:
+            cached = self._brain_intent.get(agent.agent_id)
+            if cached is not None:
+                return cached, self._brain_destination.get(agent.agent_id)
+            # Until first SLM response (or after clear), use local rules
+            intent = self._rules.decide(agent)
+            dest = None
+            if intent == "EXIT":
+                dest = agent.perception.get("nearest_exit")
+                dest = str(dest) if dest else None
+            elif intent == "GO_TO_SEAT":
+                dest = agent.assigned_seat or agent.goal
+            return intent, dest
+        intent = self._rules.decide(agent)
+        dest = None
+        if intent == "EXIT":
+            dest = agent.perception.get("nearest_exit")
+            dest = str(dest) if dest else None
+        return intent, dest
+
+    def _apply_pending_slm_results(self) -> None:
+        with self._slm_lock:
+            pending = self._slm_pending
+            error = self._slm_pending_error
+            self._slm_pending = None
+            self._slm_pending_error = None
+
+        if error:
+            self._slm_mode_label = "fallback"
+            self._note_state_change("sim", "SLM fallback", error[:80])
+            self._apply_rule_decisions_to_cache()
+            return
+
+        if not pending:
+            return
+
+        self._slm_mode_label = "remote"
+        for decision in pending:
+            self._brain_intent[decision.agent_id] = decision.intent
+            self._brain_destination[decision.agent_id] = decision.destination
+
+    def _apply_rule_decisions_to_cache(self) -> None:
+        for decision in self._rules.decide_many(self._agents):
+            self._brain_intent[decision.agent_id] = decision.intent
+            self._brain_destination[decision.agent_id] = decision.destination
+
+    def _maybe_request_slm_batch(self) -> None:
+        if not self._use_slm or not self._agents:
+            return
+        with self._slm_lock:
+            if self._slm_inflight:
+                return
+        now = time.monotonic()
+        if self._last_slm_wall_t > 0.0 and (now - self._last_slm_wall_t) < self._slm_interval_s:
+            return
+
+        self._slm_tick += 1
+        request_id = f"sim-tick-{self._slm_tick}"
+        # Snapshot payload on the Kit thread; HTTP runs in a daemon worker.
+        agents = list(self._agents)
+        payloads = [agent_to_slm_dict(a) for a in agents]
+        slm = self._slm
+
+        with self._slm_lock:
+            self._slm_inflight = True
+        self._last_slm_wall_t = now
+
+        def _worker() -> None:
+            error: Optional[str] = None
+            decisions: Optional[List[AgentDecision]] = None
+            try:
+                decisions = slm.decide_batch(
+                    agents,
+                    request_id=request_id,
+                    require_ready=True,
+                    agent_payloads=payloads,
+                )
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)
+            with self._slm_lock:
+                self._slm_pending = decisions
+                self._slm_pending_error = error
+                self._slm_inflight = False
+
+        threading.Thread(
+            target=_worker, name=f"crowd-slm-{self._slm_tick}", daemon=True
+        ).start()
 
     def _separate_walking_agents(self, up: str) -> None:
         """Simple pairwise push. Seated / arrived agents are ignored entirely."""
@@ -893,6 +1121,12 @@ class Simulation:
         self._selected_agent_id = None
         self._hovered_agent_id = None
         self._agent_watch.clear()
+        self._brain_intent.clear()
+        self._brain_destination.clear()
+        self._last_slm_wall_t = 0.0
+        with self._slm_lock:
+            self._slm_pending = None
+            self._slm_pending_error = None
         self._state_events.clear()
         self._sim_time = 0.0
 

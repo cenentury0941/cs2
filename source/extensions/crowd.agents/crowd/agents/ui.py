@@ -38,9 +38,13 @@ class CrowdAgentsWindow:
         self._status_label: Optional[ui.Label] = None
         self._agent_count_label: Optional[ui.Label] = None
         self._fire_button: Optional[ui.Button] = None
+        self._slm_status_label: Optional[ui.Label] = None
+        self._slm_url_field: Optional[ui.StringField] = None
+        self._use_slm_model = ui.SimpleBoolModel(False)
+        self._use_slm_model.add_value_changed_fn(self._on_use_slm_changed)
         self._agent_count_model = ui.SimpleIntModel(8)
         self._agent_count_model.add_value_changed_fn(self._on_agent_count_changed)
-        self._window = ui.Window(WINDOW_TITLE, width=400, height=560)
+        self._window = ui.Window(WINDOW_TITLE, width=400, height=680)
         self._build()
 
     def _build(self) -> None:
@@ -105,6 +109,31 @@ class CrowdAgentsWindow:
                 )
                 ui.Spacer(height=8)
 
+                ui.Label("Phase 6 — Hosted SLM", height=0, style={"font_size": 14})
+                ui.Label(
+                    "Laptop never loads the model — batch POST /v1/decide ~1 Hz.",
+                    height=0,
+                    word_wrap=True,
+                    style={"color": 0xFFAAAAAA, "font_size": 12},
+                )
+                with ui.HStack(height=22, spacing=6):
+                    ui.CheckBox(self._use_slm_model, width=22)
+                    ui.Label("Use hosted SLM", height=0)
+                with ui.HStack(height=24, spacing=6):
+                    ui.Label("URL", width=36, height=0)
+                    self._slm_url_field = ui.StringField(height=22)
+                    self._slm_url_field.model.set_value(self._simulation.slm_base_url)
+                with ui.HStack(height=28, spacing=4):
+                    ui.Button("Apply URL", clicked_fn=self._on_slm_apply_url)
+                    ui.Button("Check Ready", clicked_fn=self._on_slm_check_ready)
+                self._slm_status_label = ui.Label(
+                    self._simulation.slm_status_text,
+                    height=0,
+                    word_wrap=True,
+                    style={"color": 0xFFAAAAAA, "font_size": 12},
+                )
+                ui.Spacer(height=8)
+
                 ui.Label("Status", height=0, style={"font_size": 14})
                 self._status_label = ui.Label(
                     self._simulation.status_text,
@@ -116,6 +145,8 @@ class CrowdAgentsWindow:
     def refresh_status(self) -> None:
         if self._status_label:
             self._status_label.text = self._simulation.status_text
+        if self._slm_status_label:
+            self._slm_status_label.text = self._simulation.slm_status_text
         if self._fire_button:
             self._fire_button.text = (
                 "Cancel" if self._simulation.is_placing_fire else "Start Fire"
@@ -126,6 +157,9 @@ class CrowdAgentsWindow:
         self._status_label = None
         self._agent_count_label = None
         self._fire_button = None
+        self._slm_status_label = None
+        self._slm_url_field = None
+        self._use_slm_model = None
         self._agent_count_model = None
 
     def _agent_count(self) -> int:
@@ -140,6 +174,29 @@ class CrowdAgentsWindow:
                 self._agent_count_label.text = str(int(model.get_value_as_int()))
             except Exception:  # noqa: BLE001
                 pass
+
+    def _on_use_slm_changed(self, model) -> None:
+        try:
+            enabled = bool(model.get_value_as_bool())
+        except Exception:  # noqa: BLE001
+            enabled = False
+        self._simulation.set_use_slm(enabled)
+        self.refresh_status()
+
+    def _on_slm_apply_url(self) -> None:
+        url = ""
+        if self._slm_url_field is not None:
+            try:
+                url = self._slm_url_field.model.get_value_as_string()
+            except Exception:  # noqa: BLE001
+                url = ""
+        self._simulation.set_slm_base_url(url)
+        self.refresh_status()
+
+    def _on_slm_check_ready(self) -> None:
+        self._on_slm_apply_url()
+        self._simulation.probe_slm_ready()
+        self.refresh_status()
 
     def _on_open_venue(self) -> None:
         self._simulation.open_venue_dialog()

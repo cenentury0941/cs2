@@ -219,4 +219,4 @@ Related files
 -------------
 - services/slm/README.md — local Mac run / smoke test
 - services/slm/server.py — /health, /ready, /v1/decide
-- context/Progress.txt — Phase 6a done; Phase 6b Kit client still pending
+- context/Progress.txt — Phase 6a/6b Kit client wired; verify LAN/AWS in-app

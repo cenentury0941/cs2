@@ -1,0 +1,7 @@
+{
+  "commands": [
+    "ss -ltnp | grep -E ':8080|:8081' || true",
+    "curl -s -m 2 http://127.0.0.1:8080/ready || echo NO_8080",
+    "curl -s -m 2 http://127.0.0.1:8081/ready || echo NO_8081"
+  ]
+}
