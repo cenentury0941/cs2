@@ -3,6 +3,12 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [0.1.1] - 2026-08-21
+- Phase 4a: Start Fire / Cancel placement with viewport preview cuboid and click-to-spawn
+- Agent debug colors: blue toward seat, red toward exit
+- Phase 4b: fire perception via range (20m) + 210° FOV; sticky once seen; no global evacuate
+- Phase 4c: wall occlusion via omni.kit.mesh.raycast (fail-closed; no FOV-only fallback)
+
 ## [0.1.0] - 2026-08-20
 - Initial Crowd Agents extension with control panel and USD smoke-test actions
 - Phase 2: NavMesh bake, single capsule agent, path follow to random destination

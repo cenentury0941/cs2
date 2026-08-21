@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+import math
 
 import omni.usd
 from pxr import Gf, UsdGeom
@@ -44,6 +45,8 @@ class Agent:
     last_wp_index: int = -1
     # Stable corridor lane preference in [-1, 1] (0 ≈ center); set at spawn / plan
     lane_bias: float = 0.0
+    # Horizontal look direction (world); used for fire FOV. Y-up: (x, 0, z)
+    facing: Vec3 = (0.0, 0.0, 1.0)
 
     def __post_init__(self) -> None:
         self.spawn_position = self.position
@@ -51,6 +54,7 @@ class Agent:
         if not self.perception:
             self.perception = {
                 "fire_visible": False,
+                "smoke_visible": False,
                 "seat_known": bool(self.goal),
                 "at_destination": False,
             }
@@ -61,6 +65,19 @@ class Agent:
             self.goal or ""
         ).startswith("Exit")
 
+    def face_toward(self, target: Vec3, up: str = "Y") -> None:
+        """Point facing along the horizontal vector to ``target`` when possible."""
+        if up == "Z":
+            dx, dy = target[0] - self.position[0], target[1] - self.position[1]
+            length = math.sqrt(dx * dx + dy * dy)
+            if length > 1e-8:
+                self.facing = (dx / length, dy / length, 0.0)
+        else:
+            dx, dz = target[0] - self.position[0], target[2] - self.position[2]
+            length = math.sqrt(dx * dx + dz * dz)
+            if length > 1e-8:
+                self.facing = (dx / length, 0.0, dz / length)
+
     def reset(self) -> None:
         self.position = self.spawn_position
         self.intent = "IDLE"
@@ -70,15 +87,20 @@ class Agent:
         self.last_move_pos = self.spawn_position
         self.last_waypoint_dist = 0.0
         self.last_wp_index = -1
+        self.memory.pop("fire_seen", None)
         if "lane_bias" in self.memory:
             self.lane_bias = float(self.memory["lane_bias"])
         if self.assigned_seat and self.memory.get("seat_position"):
             self.goal = self.assigned_seat
             self.destination = tuple(self.memory["seat_position"])  # type: ignore[assignment]
+            seat_pos = self.destination
+            if seat_pos is not None:
+                self.face_toward(seat_pos)
         else:
             self.destination = None
         self.perception = {
             "fire_visible": False,
+            "smoke_visible": False,
             "seat_known": bool(self.assigned_seat or self.goal),
             "at_destination": False,
         }
@@ -106,7 +128,19 @@ class Agent:
             translate_op = xformable.AddTranslateOp()
 
         translate_op.Set(Gf.Vec3d(*self.center_position()))
+        self._sync_debug_color(prim)
 
+    def _sync_debug_color(self, prim) -> None:
+        """Blue → seat / default; red → evacuating to an exit."""
+        if (self.goal or "").startswith("Exit"):
+            color = Gf.Vec3f(0.92, 0.12, 0.08)
+        else:
+            color = Gf.Vec3f(0.15, 0.45, 0.95)
+        gprim = UsdGeom.Gprim(prim)
+        attr = gprim.GetDisplayColorAttr()
+        if not attr:
+            attr = gprim.CreateDisplayColorAttr()
+        attr.Set([color])
 
 def _lift(floor_point: Vec3, amount: float) -> Vec3:
     stage = omni.usd.get_context().get_stage()

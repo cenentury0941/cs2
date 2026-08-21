@@ -23,6 +23,7 @@ class CrowdAgentsWindow:
         self._simulation = simulation
         self._status_label: Optional[ui.Label] = None
         self._agent_count_label: Optional[ui.Label] = None
+        self._fire_button: Optional[ui.Button] = None
         self._agent_count_model = ui.SimpleIntModel(8)
         self._agent_count_model.add_value_changed_fn(self._on_agent_count_changed)
         self._window = ui.Window(WINDOW_TITLE, width=400, height=560)
@@ -75,7 +76,19 @@ class CrowdAgentsWindow:
                     ui.Button("Run (to seats)", clicked_fn=self._on_run)
                     ui.Button("Pause", clicked_fn=self._on_pause)
                     ui.Button("Reset", clicked_fn=self._on_reset)
-                ui.Button("Trigger Fire → Exits", clicked_fn=self._on_trigger_fire, height=28)
+                self._fire_button = ui.Button(
+                    "Start Fire",
+                    clicked_fn=self._on_fire_button,
+                    height=28,
+                )
+                ui.Label(
+                    "Start Fire → hover preview → click to place. "
+                    "Agents evacuate only when fire is in FOV+range with clear LOS "
+                    "(blue=seat, red=exit).",
+                    height=0,
+                    word_wrap=True,
+                    style={"color": 0xFFAAAAAA, "font_size": 12},
+                )
                 ui.Spacer(height=8)
 
                 ui.Label("Status", height=0, style={"font_size": 14})
@@ -89,11 +102,16 @@ class CrowdAgentsWindow:
     def refresh_status(self) -> None:
         if self._status_label:
             self._status_label.text = self._simulation.status_text
+        if self._fire_button:
+            self._fire_button.text = (
+                "Cancel" if self._simulation.is_placing_fire else "Start Fire"
+            )
 
     def destroy(self) -> None:
         self._window = None
         self._status_label = None
         self._agent_count_label = None
+        self._fire_button = None
         self._agent_count_model = None
 
     def _agent_count(self) -> int:
@@ -152,8 +170,8 @@ class CrowdAgentsWindow:
         self._simulation.reset()
         self.refresh_status()
 
-    def _on_trigger_fire(self) -> None:
-        self._simulation.trigger_fire()
+    def _on_fire_button(self) -> None:
+        self._simulation.toggle_fire_placement()
         self.refresh_status()
 
 

@@ -51,6 +51,39 @@ class Test(omni.kit.test.AsyncTestCase):
         agent.perception["fire_visible"] = True
         self.assertEqual(brain.decide(agent), "EXIT")
 
+    async def test_fire_in_view_fov_and_range(self):
+        from crowd.agents.fire import fire_in_view
+
+        agent_pos = (0.0, 0.0, 0.0)
+        facing = (0.0, 0.0, 1.0)  # looking +Z
+        # Fire ahead within range
+        self.assertTrue(
+            fire_in_view(agent_pos, facing, (0.0, 0.0, 5.0), up="Y", view_range_m=20.0)
+        )
+        # Fire behind — outside 210° FOV (±105°)
+        self.assertFalse(
+            fire_in_view(agent_pos, facing, (0.0, 0.0, -5.0), up="Y", view_range_m=20.0)
+        )
+        # Fire ahead but too far
+        self.assertFalse(
+            fire_in_view(agent_pos, facing, (0.0, 0.0, 50.0), up="Y", view_range_m=20.0)
+        )
+        # Fire to the side within ~60° half-angle (at 45° should be visible)
+        self.assertTrue(
+            fire_in_view(agent_pos, facing, (5.0, 0.0, 5.0), up="Y", view_range_m=20.0)
+        )
+
+    async def test_los_path_blocking_helpers(self):
+        from crowd.agents.fire import _path_blocks_los, _path_is_fire
+
+        self.assertTrue(_path_is_fire("/World/CrowdAgents/Fire"))
+        self.assertFalse(_path_blocks_los("/World/CrowdAgents/Fire"))
+        self.assertFalse(_path_blocks_los("/World/CrowdAgents/Agent_001"))
+        self.assertFalse(_path_blocks_los("/World/NavVolumes/Nav_001"))
+        self.assertTrue(_path_blocks_los("/World/Venue/Wall_A"))
+        self.assertTrue(_path_blocks_los("/World/Seat_003"))
+        self.assertTrue(_path_blocks_los(""))  # fail-closed
+
     async def test_seat_name_pattern(self):
         self.assertIsNotNone(SEAT_PATTERN.match("Seat_001"))
         self.assertIsNotNone(SEAT_PATTERN.match("Seat_100"))

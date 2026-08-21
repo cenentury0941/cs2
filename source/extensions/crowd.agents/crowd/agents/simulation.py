@@ -15,7 +15,7 @@ from pxr import Gf, UsdGeom
 
 from .agent import Agent
 from .ai import DecisionEngine, RuleBasedDecisionEngine
-from .fire import FireSystem
+from .fire import FIRE_FOV_DEG, FIRE_VIEW_RANGE_M, FireSystem
 from .navigation import NavigationSystem
 from . import scene as scene_util
 
@@ -50,6 +50,7 @@ class Simulation:
         return self._status
 
     def shutdown(self) -> None:
+        self._fire.reset()
         self._agents.clear()
         self._running = False
 
@@ -60,18 +61,31 @@ class Simulation:
         fire_active = self._fire.is_active
         seated = 0
         evacuating = 0
+        saw_fire = 0
         up = scene_util.up_axis()
+        self._fire.tick(dt)
 
         for agent in self._agents:
-            agent.perception["fire_visible"] = self._fire.is_visible_to(agent)
-            if fire_active:
-                agent.perception["fire_visible"] = True
+            visible = self._fire.is_visible_to(agent, up=up)
+            agent.perception["fire_visible"] = visible
+            agent.perception["smoke_visible"] = visible
+            if visible:
+                saw_fire += 1
 
             intent = self._brain.decide(agent)
 
             if intent == "EXIT":
+                # Leave seat / prior arrival so path following can start
+                if agent.perception.get("at_destination") and not (
+                    agent.goal or ""
+                ).startswith("Exit"):
+                    agent.perception["at_destination"] = False
+                    agent.waypoints = []
+                    agent.waypoint_index = 0
                 self._ensure_exit_destination(agent)
                 if agent.destination is not None and not agent.perception.get("at_destination"):
+                    if not agent.waypoints:
+                        self._navigation.set_destination(agent, agent.destination)
                     intent = "WALK"
             elif (
                 intent == "GO_TO_SEAT"
@@ -90,14 +104,20 @@ class Simulation:
             agent.sync_to_usd()
 
             if agent.perception.get("at_destination"):
-                if fire_active or (agent.goal or "").startswith("Exit"):
+                if (agent.goal or "").startswith("Exit"):
                     evacuating += 1
                 else:
                     seated += 1
 
         total = len(self._agents)
         if fire_active:
-            self._status = f"Running (FIRE) — {evacuating}/{total} at exits"
+            fleeing = sum(
+                1 for a in self._agents if (a.goal or "").startswith("Exit")
+            )
+            self._status = (
+                f"Running (FIRE) — {saw_fire}/{total} see fire, "
+                f"{fleeing} evacuating, {evacuating} at exits"
+            )
         else:
             walking = total - seated
             self._status = f"Running — {seated}/{total} seated, {walking} walking"
@@ -110,7 +130,8 @@ class Simulation:
         if running:
             self._exits = scene_util.find_exits()
             for agent in self._agents:
-                if self._fire.is_active:
+                # Already evacuating (saw fire earlier) — repath to exit
+                if self._fire.is_active and (agent.goal or "").startswith("Exit"):
                     self._ensure_exit_destination(agent)
                     if agent.destination is not None:
                         agent.perception["at_destination"] = False
@@ -360,6 +381,7 @@ class Simulation:
             agent.waypoints = []
             agent.waypoint_index = 0
             agent.intent = "IDLE"
+            agent.face_toward(seat_pos, up)
             agent.sync_to_usd()
             agents.append(agent)
 
@@ -426,6 +448,7 @@ class Simulation:
             agent.waypoints = []
             agent.waypoint_index = 0
             agent.intent = "IDLE"
+            agent.face_toward(seat_pos)
             agent.sync_to_usd()
 
         names = [s.name for s in assigned]
@@ -442,22 +465,56 @@ class Simulation:
             return []
         return self._rng.sample(list(seats), n)
 
-    def trigger_fire(self) -> None:
-        self._fire.trigger()
+    @property
+    def is_placing_fire(self) -> bool:
+        return self._fire.is_placing
+
+    def begin_fire_placement(self) -> None:
+        """UI: Start Fire → Cancel. Click viewport to place the cuboid."""
+        if self._fire.is_placing:
+            return
+        ok = self._fire.begin_placement(self._on_fire_placed)
+        if ok:
+            self._status = "Fire placement — click the viewport to spawn (Cancel to abort)."
+        else:
+            self._status = "Fire placement failed — no active Viewport."
+        self._log(self._status)
+
+    def cancel_fire_placement(self) -> None:
+        if not self._fire.is_placing:
+            return
+        self._fire.cancel_placement()
+        self._status = "Fire placement cancelled."
+        self._log(self._status)
+
+    def toggle_fire_placement(self) -> None:
+        if self._fire.is_placing:
+            self.cancel_fire_placement()
+        else:
+            self.begin_fire_placement()
+
+    def _on_fire_placed(self, position: Vec3) -> None:
+        self.trigger_fire_at(position)
+
+    def trigger_fire_at(self, position: Vec3) -> None:
+        """Spawn red fire cuboid. Evacuation is perception-driven (FOV + range)."""
+        self._fire.trigger_at(position)
         self._exits = scene_util.find_exits()
-        for agent in self._agents:
-            agent.perception["fire_visible"] = True
-            agent.perception["at_destination"] = False
-            self._ensure_exit_destination(agent)
-            if agent.destination is not None:
-                self._navigation.set_destination(agent, agent.destination)
-            agent.sync_to_usd()
         exits = [e.name for e in self._exits] or ["(none found)"]
         self._status = (
-            f"Fire triggered — agents evacuating toward {', '.join(exits)} "
-            "(Phase 4 VFX still stub)."
+            f"Fire at ({position[0]:.1f}, {position[1]:.1f}, {position[2]:.1f}) — "
+            f"agents evacuate when they see it "
+            f"(FOV {FIRE_FOV_DEG:.0f}°, {FIRE_VIEW_RANGE_M:.0f}m, wall LOS). "
+            f"Exits: {', '.join(exits)}."
         )
         self._log(self._status)
+
+    def trigger_fire(self) -> None:
+        """Back-compat: place fire at origin if somehow called without a pick."""
+        if self._fire.position is not None:
+            self.trigger_fire_at(self._fire.position)
+            return
+        self.trigger_fire_at((0.0, 0.0, 0.0))
 
     def _ensure_exit_destination(self, agent: Agent) -> None:
         if not self._exits:
@@ -519,6 +576,10 @@ class Simulation:
         capsule.CreateHeightAttr(max(AGENT_HEIGHT - 2.0 * AGENT_RADIUS, 0.1))
         capsule.CreateRadiusAttr(AGENT_RADIUS)
         capsule.CreateAxisAttr(UsdGeom.Tokens.y if up == "Y" else UsdGeom.Tokens.z)
+        # Default debug color: heading to seat (blue)
+        UsdGeom.Gprim(capsule.GetPrim()).CreateDisplayColorAttr(
+            [Gf.Vec3f(0.15, 0.45, 0.95)]
+        )
         xformable = UsdGeom.Xformable(capsule.GetPrim())
         xformable.ClearXformOpOrder()
         xformable.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))

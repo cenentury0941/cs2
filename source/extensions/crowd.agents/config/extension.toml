@@ -10,7 +10,7 @@
 
 [package]
 title = "Crowd Agents"
-version = "0.1.0"
+version = "0.1.1"
 description = "Intent-driven crowd simulation for venues: agents, navigation, fire response, and decision engine."
 category = "Simulation"
 changelog = "docs/CHANGELOG.md"
@@ -23,6 +23,10 @@ repository = "https://github.com/NVIDIA-Omniverse/kit-app-template"
 "omni.kit.uiapp" = {}
 "omni.usd" = {}
 "omni.anim.navigation.core" = {}
+"omni.kit.viewport.utility" = {}
+"omni.kit.viewport.window" = {}
+"omni.kit.raycast.query" = {}
+"omni.kit.mesh.raycast" = {}
 "omni.kit.window.stage" = { optional = true }
 "omni.kit.window.property" = { optional = true }
 "omni.rtx.window.settings" = { optional = true }
@@ -30,6 +34,7 @@ repository = "https://github.com/NVIDIA-Omniverse/kit-app-template"
 
 [settings]
 exts."crowd.agents".layout.enabled = true
+exts."omni.kit.mesh.raycast".bvhBuildOnFirstRequired = true
 
 
 [[python.module]]

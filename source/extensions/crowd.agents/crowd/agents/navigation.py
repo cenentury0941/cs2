@@ -447,7 +447,10 @@ class NavigationSystem:
         if intent not in ("GO_TO_SEAT", "EXIT", "WALK"):
             return
         if agent.perception.get("at_destination") and intent == "EXIT":
-            return
+            # Already arrived at an exit — stay put. Seated agents must leave.
+            if (agent.goal or "").startswith("Exit"):
+                return
+            agent.perception["at_destination"] = False
         if not agent.waypoints and agent.destination is not None:
             self.set_destination(agent, agent.destination)
         self._follow_waypoints(agent, dt)
@@ -482,8 +485,13 @@ class NavigationSystem:
 
         step = min(agent.speed_mps * dt, dist)
         inv = step / dist if dist > 1e-8 else 0.0
-        agent.position = (pos[0] + dx * inv, pos[1] + dy * inv, pos[2] + dz * inv)
+        new_pos = (pos[0] + dx * inv, pos[1] + dy * inv, pos[2] + dz * inv)
+        agent.position = new_pos
         agent.perception["at_destination"] = False
+        # Face movement direction for FOV perception
+        if abs(dx) + abs(dy) + abs(dz) > 1e-8:
+            length = dist
+            agent.facing = (dx / length, dy / length, dz / length)
 
     def _advance_past_waypoints(self, agent: "Agent") -> None:
         """Advance waypoint index when close to or past the current checkpoint.
