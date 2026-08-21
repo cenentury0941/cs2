@@ -1,7 +1,7 @@
 SimulCrowd — Connecting Windows Omniverse to Mac SLM (LAN)
 ==========================================================
 
-Last updated: 2026-08-21
+Last updated: 2026-08-21 (LAN verified from Windows)
 
 Overview
 --------
@@ -39,6 +39,35 @@ SLM base URL for the Windows laptop (use this):
 Re-check if Wi‑Fi reconnects (DHCP can change the address):
 
     ipconfig getifaddr en0
+
+
+Verified from Windows laptop (2026-08-21)
+-----------------------------------------
+Windows Wi‑Fi (same LAN as Mac):
+
+    Interface:     Wi-Fi
+    IPv4:          172.19.190.216
+    Subnet mask:   255.255.252.0
+    Gateway:       172.19.190.20
+
+Probe round 1 (server not yet accepting LAN traffic):
+  - Ping 172.19.190.197 — OK (~9–22 ms)
+  - TCP :8080 — FAIL (connection refused / TcpTestSucceeded False)
+  - GET /health, GET /ready — FAIL (curl exit 7)
+  - Cause: SLM not bound for LAN (or not running / firewall)
+
+Probe round 2 (after Mac started with --host 0.0.0.0 --port 8080):
+  - TCP :8080 — OK
+  - GET  http://172.19.190.197:8080/health
+      → HTTP 200  {"status":"ok"}  (~0.11 s)
+  - GET  http://172.19.190.197:8080/ready
+      → HTTP 200  {"status":"ready"}  (~0.02 s)
+  - POST http://172.19.190.197:8080/v1/decide  (Agent_001 seat walk sample)
+      → HTTP 200  (~0.7 s)
+      → {"request_id":"lan-test-1","decisions":[{"id":"Agent_001","intent":"GO_TO_SEAT","destination":"Seat_003"}]}
+
+Verdict: LAN path Windows → Mac SLM is confirmed working.
+Note: PowerShell mangles inline JSON for curl; use curl.exe --data-binary @file.json.
 
 
 1. Bind the SLM to the LAN (required)
