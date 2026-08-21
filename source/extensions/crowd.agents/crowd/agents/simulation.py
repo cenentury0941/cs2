@@ -22,9 +22,10 @@ from . import scene as scene_util
 TEST_CUBE_PATH = "/World/CrowdAgents/TestCube"
 AGENTS_ROOT = "/World/CrowdAgents"
 DEFAULT_AGENT_COUNT = 8
-MAX_AGENTS = 10
+MAX_AGENTS = 100
+MIN_AGENTS = 1
 AGENT_HEIGHT = 1.7
-AGENT_RADIUS = 0.3
+AGENT_RADIUS = 0.35
 Vec3 = Tuple[float, float, float]
 
 
@@ -59,6 +60,7 @@ class Simulation:
         fire_active = self._fire.is_active
         seated = 0
         evacuating = 0
+        up = scene_util.up_axis()
 
         for agent in self._agents:
             agent.perception["fire_visible"] = self._fire.is_visible_to(agent)
@@ -81,7 +83,8 @@ class Simulation:
             agent.intent = intent
             self._navigation.apply_intent(agent, intent, dt)
 
-        self._separate_agents()
+        # Only moving agents collide; seated agents are ignored by others
+        self._separate_walking_agents(up)
 
         for agent in self._agents:
             agent.sync_to_usd()
@@ -258,6 +261,14 @@ class Simulation:
             )
         self._log(self._status)
 
+    def create_nav_include_volumes(self) -> None:
+        """Convert Nav_XXX placeholder cubes into NavMesh Include Volumes."""
+        count, message = self._navigation.create_include_volumes_from_nav_markers()
+        self._status = message
+        self._log(self._status)
+        if count > 0:
+            carb.log_info(f"[crowd.agents] {message}")
+
     def spawn_agents(self, count: Optional[int] = None) -> None:
         """Phase 3: spawn N agents inside Spawn bounds, each assigned a Seat_XXX."""
         stage = omni.usd.get_context().get_stage()
@@ -280,23 +291,25 @@ class Simulation:
         seats = scene_util.find_seats(stage)
         if not seats:
             self._status = (
-                "No Seat_XXX prims found (expected Seat_000 … Seat_024)."
+                "No Seat_XXX prims found (expected Seat_001 … Seat_100)."
             )
             self._log(self._status)
             return
 
         self._exits = scene_util.find_exits(stage)
         wanted = count if count is not None else DEFAULT_AGENT_COUNT
-        wanted = max(1, min(wanted, MAX_AGENTS, len(seats)))
+        wanted = max(MIN_AGENTS, min(int(wanted), MAX_AGENTS, len(seats)))
 
         self._clear_agent_prims(stage)
         self._ensure_xform(stage, "/World")
         self._ensure_xform(stage, AGENTS_ROOT)
 
         agents: List[Agent] = []
-        assigned_seats = seats[:wanted]
+        assigned_seats = self._sample_seats(seats, wanted)
         up = scene_util.up_axis(stage)
         placed: List[Vec3] = []
+        # Tighter spawn spacing only when packing many agents
+        min_spacing = 0.95 if wanted <= 20 else (0.65 if wanted <= 50 else 0.45)
 
         if spawn_zone.area < 0.05:
             self._status = (
@@ -312,11 +325,11 @@ class Simulation:
                 snap_fn=self._navigation.snap_to_navmesh,
                 rng=self._rng,
                 existing=placed,
-                min_spacing=0.75,
+                min_spacing=min_spacing,
             )
             if feet is None:
                 self._status = (
-                    f"Could only place {len(agents)} agents on Spawn plane + NavMesh "
+                    f"Could only place {len(agents)}/{wanted} agents on Spawn plane + NavMesh "
                     f"(area={spawn_zone.area:.1f}, geom={spawn_zone.geom_path})."
                 )
                 self._log(self._status)
@@ -336,7 +349,7 @@ class Simulation:
                 assigned_seat=seat.name,
                 seat_prim_path=seat.prim_path,
                 height=AGENT_HEIGHT,
-                radius=AGENT_RADIUS + 0.05,
+                radius=AGENT_RADIUS,
             )
             agent.spawn_position = feet
             agent.memory["seat_position"] = list(seat_pos)
@@ -357,12 +370,13 @@ class Simulation:
             return
 
         exit_names = [e.name for e in self._exits] or ["(none)"]
+        seat_names = [s.name for s in assigned_seats[: len(agents)]]
         u0, u1 = spawn_zone.u_range
         v0, v1 = spawn_zone.v_range
         self._status = (
-            f"Spawned {len(agents)} idle on Spawn geom={spawn_zone.geom_path} "
-            f"localUV [{u0:.1f},{u1:.1f}]x[{v0:.1f},{v1:.1f}] area={spawn_zone.area:.1f} → "
-            f"{assigned_seats[0].name}…{assigned_seats[len(agents) - 1].name}. "
+            f"Spawned {len(agents)} idle on Spawn (area={spawn_zone.area:.1f}) → "
+            f"random seats {seat_names[0]}…{seat_names[-1]} "
+            f"({len(seat_names)} of {len(seats)} available). "
             f"Exits: {', '.join(exit_names)}. Press Run to seats."
         )
         self._log(self._status)
@@ -388,17 +402,17 @@ class Simulation:
         self._log(self._status)
 
     def assign_seats(self) -> None:
-        """Re-bind current agents to Seat_XXX (paths planned on Run)."""
+        """Re-bind current agents to random unique Seat_XXX (paths planned on Run)."""
         if not self._agents:
             self._status = "Spawn Agents first."
             return
         seats = scene_util.find_seats()
         if not seats:
-            self._status = "No Seat_XXX prims found."
+            self._status = "No Seat_XXX prims found (expected Seat_001 … Seat_100)."
             return
 
-        for i, agent in enumerate(self._agents):
-            seat = seats[i % len(seats)]
+        assigned = self._sample_seats(seats, len(self._agents))
+        for agent, seat in zip(self._agents, assigned):
             seat_pos = self._navigation.snap_to_navmesh(seat.position) or seat.position
             agent.assigned_seat = seat.name
             agent.seat_prim_path = seat.prim_path
@@ -412,10 +426,19 @@ class Simulation:
             agent.intent = "IDLE"
             agent.sync_to_usd()
 
+        names = [s.name for s in assigned]
         self._status = (
-            f"Assigned seats for {len(self._agents)} agents (still at Spawn). Press Run."
+            f"Random seats for {len(self._agents)} agents "
+            f"({names[0]}…{names[-1]}). Still at Spawn — press Run."
         )
         self._log(self._status)
+
+    def _sample_seats(self, seats: list, count: int) -> list:
+        """Pick ``count`` unique seats at random (or all seats if fewer available)."""
+        n = max(0, min(count, len(seats)))
+        if n == 0:
+            return []
+        return self._rng.sample(list(seats), n)
 
     def trigger_fire(self) -> None:
         self._fire.trigger()
@@ -447,21 +470,20 @@ class Simulation:
             agent.waypoints = []
             agent.waypoint_index = 0
 
-    def _separate_agents(self) -> None:
-        """Simple pairwise collision: push overlapping capsules apart on the ground plane."""
-        n = len(self._agents)
+    def _separate_walking_agents(self, up: str) -> None:
+        """Simple pairwise push. Seated / arrived agents are ignored entirely."""
+        movers = [a for a in self._agents if not a.perception.get("at_destination")]
+        n = len(movers)
         if n < 2:
             return
-        up = scene_util.up_axis()
         for i in range(n):
             for j in range(i + 1, n):
-                a = self._agents[i]
-                b = self._agents[j]
+                a = movers[i]
+                b = movers[j]
                 pa, pb = a.position, b.position
                 dx = pb[0] - pa[0]
                 dy = pb[1] - pa[1]
                 dz = pb[2] - pa[2]
-                # Horizontal separation only
                 if up == "Y":
                     dist_sq = dx * dx + dz * dz
                     dist = math.sqrt(dist_sq) if dist_sq > 1e-12 else 0.0
@@ -474,7 +496,6 @@ class Simulation:
                     continue
 
                 if dist < 1e-6:
-                    # Identical positions — nudge on X
                     push = min_dist * 0.5
                     a.position = (pa[0] - push, pa[1], pa[2])
                     b.position = (pb[0] + push, pb[1], pb[2])

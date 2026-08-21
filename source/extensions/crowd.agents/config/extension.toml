@@ -23,9 +23,13 @@ repository = "https://github.com/NVIDIA-Omniverse/kit-app-template"
 "omni.kit.uiapp" = {}
 "omni.usd" = {}
 "omni.anim.navigation.core" = {}
+"omni.kit.window.stage" = { optional = true }
+"omni.kit.window.property" = { optional = true }
+"omni.rtx.window.settings" = { optional = true }
 
 
 [settings]
+exts."crowd.agents".layout.enabled = true
 
 
 [[python.module]]

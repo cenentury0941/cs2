@@ -52,11 +52,13 @@ class Test(omni.kit.test.AsyncTestCase):
         self.assertEqual(brain.decide(agent), "EXIT")
 
     async def test_seat_name_pattern(self):
-        self.assertIsNotNone(SEAT_PATTERN.match("Seat_000"))
+        self.assertIsNotNone(SEAT_PATTERN.match("Seat_001"))
+        self.assertIsNotNone(SEAT_PATTERN.match("Seat_100"))
         self.assertIsNotNone(SEAT_PATTERN.match("Seat_024"))
-        self.assertIsNone(SEAT_PATTERN.match("Seat.000"))
+        self.assertIsNone(SEAT_PATTERN.match("Seat.001"))
         self.assertIsNone(SEAT_PATTERN.match("Seat_24"))
         self.assertEqual(int(SEAT_PATTERN.match("Seat_007").group(1)), 7)
+        self.assertEqual(int(SEAT_PATTERN.match("Seat_100").group(1)), 100)
 
     async def test_spawn_samples_fill_xy_bounds(self):
         zone = _make_zone(0.0, 4.0, 0.0, 2.0)
@@ -78,6 +80,7 @@ class Test(omni.kit.test.AsyncTestCase):
             position=(0.0, 0.0, 0.0),
             height=1.7,
         )
+        agent.destination = (2.0, 0.0, 0.0)
         agent.waypoints = [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
         agent.waypoint_index = 1
         agent.speed_mps = 1.0
@@ -86,6 +89,24 @@ class Test(omni.kit.test.AsyncTestCase):
         self.assertGreater(agent.position[0], 0.0)
         self.assertLess(agent.position[0], 2.0)
         self.assertFalse(agent.perception.get("at_destination"))
+
+    async def test_retry_replans_when_stuck(self):
+        nav = NavigationSystem()
+        agent = Agent(
+            agent_id="stuck",
+            prim_path="/World/CrowdAgents/Stuck",
+            position=(0.0, 0.0, 0.0),
+            height=1.7,
+        )
+        agent.destination = (5.0, 0.0, 0.0)
+        agent.waypoints = [(0.0, 0.0, 0.0), (5.0, 0.0, 0.0)]
+        agent.waypoint_index = 1
+        agent.last_move_pos = agent.position
+        agent.retry_timer = 0.99
+        # Not moving — should trip retry (≥1s) and clear timer via set_destination
+        # (path query may fail without NavMesh; still resets timer / last_move_pos)
+        nav._update_retry(agent, dt=0.05)
+        self.assertEqual(agent.retry_timer, 0.0)
 
     async def test_window_smoke_buttons_exist(self):
         spawn = ui_test.find(

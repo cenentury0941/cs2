@@ -9,21 +9,24 @@ import carb
 import omni.ext
 import omni.kit.app
 
+from .layout import schedule_startup_layout
 from .simulation import Simulation
-from .ui import CrowdAgentsWindow
+from .ui import AgentInfoWindow, CrowdAgentsWindow
 
 # Match crowd.sim.kit rate limit; used if the update event omits dt.
 _DEFAULT_DT = 1.0 / 30.0
 
 
 class CrowdAgentsExtension(omni.ext.IExt):
-    """Owns the Crowd Agents window and drives the simulation update loop."""
+    """Owns Crowd Sim UI and drives the simulation update loop."""
 
     def on_startup(self, _ext_id: str) -> None:
         carb.log_info("[crowd.agents] Extension startup")
 
         self._simulation = Simulation()
         self._window = CrowdAgentsWindow(self._simulation)
+        self._agent_info_window = AgentInfoWindow()
+        self._layout_task = schedule_startup_layout()
         self._update_sub = (
             omni.kit.app.get_app()
             .get_update_event_stream()
@@ -57,6 +60,10 @@ class CrowdAgentsExtension(omni.ext.IExt):
     def on_shutdown(self) -> None:
         carb.log_info("[crowd.agents] Extension shutdown")
         self._update_sub = None
+        self._layout_task = None
+        if self._agent_info_window:
+            self._agent_info_window.destroy()
+            self._agent_info_window = None
         if self._window:
             self._window.destroy()
             self._window = None

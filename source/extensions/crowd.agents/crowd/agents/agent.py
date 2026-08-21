@@ -38,9 +38,12 @@ class Agent:
     speed_mps: float = 1.4
     height: float = 1.7
     radius: float = 0.35
+    retry_timer: float = 0.0
+    last_move_pos: Vec3 = (0.0, 0.0, 0.0)
 
     def __post_init__(self) -> None:
         self.spawn_position = self.position
+        self.last_move_pos = self.position
         if not self.perception:
             self.perception = {
                 "fire_visible": False,
@@ -48,12 +51,19 @@ class Agent:
                 "at_destination": False,
             }
 
+    @property
+    def is_seated(self) -> bool:
+        return bool(self.perception.get("at_destination")) and not (
+            self.goal or ""
+        ).startswith("Exit")
+
     def reset(self) -> None:
         self.position = self.spawn_position
         self.intent = "IDLE"
         self.waypoints = []
         self.waypoint_index = 0
-        # Keep assigned seat as the default goal after reset
+        self.retry_timer = 0.0
+        self.last_move_pos = self.spawn_position
         if self.assigned_seat and self.memory.get("seat_position"):
             self.goal = self.assigned_seat
             self.destination = tuple(self.memory["seat_position"])  # type: ignore[assignment]
@@ -66,7 +76,6 @@ class Agent:
         }
 
     def center_position(self) -> Vec3:
-        """Capsule/visual center derived from feet + height."""
         return _lift(self.position, self.height * 0.5)
 
     def sync_to_usd(self) -> None:
