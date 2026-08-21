@@ -3,7 +3,9 @@
 # Usage (on the instance):
 #   cd /home/ubuntu/cs/services/slm
 #   bash deploy_aws.sh
-# Optional: SLM_PORT=8080 SLM_MODEL_ID=microsoft/Phi-4-mini-instruct bash deploy_aws.sh
+# Optional:
+#   SLM_WORKERS=4 SLM_PORT=8080 SLM_MODEL_ID=microsoft/Phi-4-mini-instruct bash deploy_aws.sh
+# Override SLM_WORKERS for N identical workers behind a round-robin LB on SLM_PORT.
 
 set -eu
 
@@ -12,6 +14,7 @@ cd "$ROOT"
 
 HOST="${SLM_HOST:-0.0.0.0}"
 PORT="${SLM_PORT:-8080}"
+WORKERS="${SLM_WORKERS:-4}"
 MODEL="${SLM_MODEL_ID:-microsoft/Phi-4-mini-instruct}"
 VENV="${SLM_VENV:-$ROOT/.venv-cuda}"
 
@@ -43,11 +46,12 @@ python -m pip install -r requirements-cuda.txt
 # unconstrained install left 5.x in the venv.
 python -m pip install 'transformers>=4.49.0,<4.54.0'
 
-echo "==> Starting SLM on ${HOST}:${PORT} (model=${MODEL})"
+echo "==> Starting SLM fleet: workers=${WORKERS} public=${HOST}:${PORT} model=${MODEL}"
+echo "    Workers bind 127.0.0.1:$((PORT + 1)).. ; LB round-robins on ${PORT}"
 echo "    Local smoke:  curl -s http://127.0.0.1:${PORT}/health"
 echo "    From laptop:  aws ssm start-session --target <instance-id> --region us-east-1 \\"
 echo "      --document-name AWS-StartPortForwardingSession \\"
 echo "      --parameters '{\"portNumber\":[\"${PORT}\"],\"localPortNumber\":[\"${PORT}\"]}'"
 echo "    then:         curl -s http://127.0.0.1:${PORT}/ready"
 
-exec python run_aws.py --host "$HOST" --port "$PORT" --model "$MODEL"
+exec python run_aws.py --host "$HOST" --port "$PORT" --workers "$WORKERS" --model "$MODEL"

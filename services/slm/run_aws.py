@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Start the SimulCrowd SLM HTTP service on AWS Ubuntu (CUDA).
+"""Start 1–N CUDA SLM workers plus a round-robin load balancer on AWS Ubuntu.
 
-Designed for the hackathon g6e.xlarge Omniverse instance. Keeps the same
-/health, /ready, and /v1/decide contract as the Mac mlx_lm service.
-
-Default bind is 0.0.0.0 so clients can reach the API via SSM port-forward
-or a security-group allowlist (do not expose publicly without auth).
+Client URL stays http://<host>:<port> (/health, /ready, /v1/decide).
+Workers bind loopback on consecutive ports starting at --worker-base-port.
+Default: 4 workers behind a round-robin LB (override with SLM_WORKERS).
 """
 
 from __future__ import annotations
@@ -13,52 +11,128 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import List
 
 _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 _DEFAULT_MODEL = "microsoft/Phi-4-mini-instruct"
+_log = logging.getLogger(__name__)
 
 
-def main() -> None:
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run SimulCrowd SLM service on AWS Ubuntu (CUDA / transformers)"
+        description="Run SimulCrowd SLM fleet on AWS Ubuntu (CUDA) with round-robin LB"
     )
     parser.add_argument(
         "--host",
         default=os.environ.get("SLM_HOST", "0.0.0.0"),
-        help="Bind address (default 0.0.0.0 for remote clients)",
+        help="Public bind address for the load balancer (default 0.0.0.0)",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=int(os.environ.get("SLM_PORT", "8080")),
+        help="Public port clients use (default 8080)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.environ.get("SLM_WORKERS", "4")),
+        help="Number of identical CUDA worker processes (default 4)",
+    )
+    parser.add_argument(
+        "--worker-base-port",
+        type=int,
+        default=int(os.environ.get("SLM_WORKER_BASE_PORT", "0")) or None,
+        help="First worker loopback port (default: public port + 1)",
     )
     parser.add_argument(
         "--model",
         default=os.environ.get("SLM_MODEL_ID", _DEFAULT_MODEL),
         help="Hugging Face model id (CUDA)",
     )
-    parser.add_argument(
-        "--reload",
-        action="store_true",
-        help="uvicorn auto-reload (dev only; reloads unload the model)",
-    )
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def _worker_ports(public_port: int, workers: int, base: int | None) -> List[int]:
+    start = base if base is not None else public_port + 1
+    ports = [start + i for i in range(workers)]
+    if public_port in ports:
+        raise SystemExit(
+            f"Worker ports {ports} collide with public port {public_port}. "
+            "Set --worker-base-port / SLM_WORKER_BASE_PORT higher."
+        )
+    return ports
+
+
+def _spawn_worker(port: int, model: str, index: int, total: int) -> subprocess.Popen:
+    env = os.environ.copy()
+    env["SLM_BACKEND"] = "cuda"
+    env["SLM_MODEL_ID"] = model
+    env["SLM_HOST"] = "127.0.0.1"
+    env["SLM_PORT"] = str(port)
+    # Avoid nested accidental LB / worker URL pollution in children.
+    env.pop("SLM_WORKER_URLS", None)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "server:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--log-level",
+        "info",
+    ]
+    _log.info("Starting worker %d/%d on 127.0.0.1:%s", index + 1, total, port)
+    return subprocess.Popen(
+        cmd,
+        cwd=str(_ROOT),
+        env=env,
+        start_new_session=True,
+    )
+
+
+def _terminate(procs: List[subprocess.Popen], sig: int = signal.SIGTERM) -> None:
+    for p in procs:
+        if p.poll() is None:
+            try:
+                os.killpg(p.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    p.send_signal(sig)
+                except ProcessLookupError:
+                    pass
+    deadline = time.time() + 15.0
+    for p in procs:
+        remaining = max(0.1, deadline - time.time())
+        try:
+            p.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                p.kill()
+
+
+def main() -> None:
+    args = _parse_args()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    # Must be set before uvicorn imports server → worker → config.
-    os.environ["SLM_BACKEND"] = "cuda"
-    os.environ["SLM_MODEL_ID"] = args.model
-    os.environ["SLM_HOST"] = args.host
-    os.environ["SLM_PORT"] = str(args.port)
+    if args.workers < 1:
+        raise SystemExit("--workers / SLM_WORKERS must be >= 1")
 
     try:
         import torch
@@ -75,24 +149,67 @@ def main() -> None:
             "CUDA is not available. Check nvidia-smi on the g6e.xlarge instance."
         )
 
-    logging.getLogger(__name__).info(
-        "CUDA OK: %s (%.1f GiB). Binding http://%s:%s model=%s",
+    ports = _worker_ports(args.port, args.workers, args.worker_base_port)
+    urls = [f"http://127.0.0.1:{p}" for p in ports]
+
+    _log.info(
+        "CUDA OK: %s (%.1f GiB). Fleet workers=%d public=http://%s:%s model=%s",
         torch.cuda.get_device_name(0),
         torch.cuda.get_device_properties(0).total_memory / (1024**3),
+        args.workers,
         args.host,
         args.port,
         args.model,
     )
+    if args.workers > 1:
+        _log.warning(
+            "Each worker loads a full model copy into GPU memory. "
+            "Raise SLM_WORKERS only if VRAM allows."
+        )
 
-    import uvicorn
+    procs: List[subprocess.Popen] = []
 
-    uvicorn.run(
-        "server:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        factory=False,
-    )
+    def _shutdown(*_args: object) -> None:
+        _log.info("Shutting down %d worker(s)…", len(procs))
+        _terminate(procs)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    try:
+        for i, port in enumerate(ports):
+            procs.append(_spawn_worker(port, args.model, i, args.workers))
+            time.sleep(0.3)
+            if procs[-1].poll() is not None:
+                raise SystemExit(
+                    f"Worker on port {port} exited early with code {procs[-1].returncode}"
+                )
+
+        os.environ["SLM_BACKEND"] = "cuda"
+        os.environ["SLM_MODEL_ID"] = args.model
+        os.environ["SLM_HOST"] = args.host
+        os.environ["SLM_PORT"] = str(args.port)
+        os.environ["SLM_WORKER_URLS"] = ",".join(urls)
+        os.environ["SLM_WORKERS"] = str(args.workers)
+
+        import uvicorn
+
+        _log.info(
+            "Load balancer on %s:%s → %s",
+            args.host,
+            args.port,
+            os.environ["SLM_WORKER_URLS"],
+        )
+        uvicorn.run(
+            "load_balancer:app",
+            host=args.host,
+            port=args.port,
+            factory=False,
+            log_level="info",
+        )
+    finally:
+        _terminate(procs)
 
 
 if __name__ == "__main__":

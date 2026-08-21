@@ -68,7 +68,23 @@ python run_aws.py
 ```
 
 Defaults: bind `0.0.0.0:8080`, model `microsoft/Phi-4-mini-instruct`,
-`SLM_BACKEND=cuda`.
+`SLM_BACKEND=cuda`, **`SLM_WORKERS=4`** (~32–40 GB VRAM for Phi-4-mini bf16).
+
+`run_aws.py` / `deploy_aws.sh` start N identical worker processes on loopback
+(`8081`, `8082`, …) and a round-robin load balancer on the public port. Clients
+keep using `http://host:8080`. Override when needed:
+
+```bash
+SLM_WORKERS=1 bash deploy_aws.sh   # lighter / share GPU with Omniverse
+SLM_WORKERS=4 bash deploy_aws.sh   # default
+# or: python run_aws.py --workers 4
+```
+
+Each worker loads its own model copy into GPU memory. On a shared Omniverse/DCV
+box, watch `nvidia-smi` — 4 workers leave little headroom on a 48 GB L40S.
+
+`/ready` is 200 when **at least one** worker has finished loading; the JSON may
+also include `workers_ready` / `workers_total`.
 
 Reach the API from a laptop without opening the security group:
 
