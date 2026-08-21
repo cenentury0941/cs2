@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import random
 import re
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -22,9 +23,17 @@ WAYPOINT_EPSILON = 0.20
 GOAL_ARRIVAL_EPSILON = 0.35
 MOVE_EPS = 0.02  # m per tick — below this counts as "not moving"
 RETRY_TIMEOUT_S = 1.0
+# Replan when closing on the *current waypoint* slower than this (m/s)
+MIN_WP_CLOSING_MPS = 0.25
+# Cap dt used by replan so a hitch can't force every agent to replan next frame
+REPLAN_DT_CAP_S = 0.1
 # Blender Nav.001 → USD Nav_001 (also accept Nav.001)
 NAV_MARKER_PATTERN = re.compile(r"^Nav[._](\d+)$", re.IGNORECASE)
 NAVMESH_VOLUME_INCLUDE = 0
+
+# Light lane jitter — capped by NavMesh bake agent radius (no side probes)
+LANE_RADIUS_SCALE = 0.85  # fraction of bake radius used as max lateral offset
+DEFAULT_BAKE_RADIUS = 0.4
 
 
 class NavigationSystem:
@@ -33,6 +42,7 @@ class NavigationSystem:
     def __init__(self) -> None:
         self._interface = None
         self._random_counter = 0
+        self._lane_rng = random.Random(41)
 
     def _acquire(self):
         if self._interface is not None:
@@ -405,6 +415,15 @@ class NavigationSystem:
         if len(waypoints) < 2:
             waypoints = [start, end]
             carb.log_warn("[crowd.agents] No NavMesh path — using direct line fallback")
+
+        # Spread agents across the corridor instead of hugging the shortest-path edge
+        if "lane_bias" not in agent.memory:
+            agent.lane_bias = self._lane_rng.triangular(-1.0, 1.0, 0.0)
+            agent.memory["lane_bias"] = agent.lane_bias
+        else:
+            agent.lane_bias = float(agent.memory.get("lane_bias", agent.lane_bias))
+        waypoints = self._apply_lane_offsets(waypoints, agent)
+
         agent.position = start
         agent.destination = end
         agent.waypoints = waypoints
@@ -412,8 +431,13 @@ class NavigationSystem:
         agent.perception["at_destination"] = False
         agent.retry_timer = 0.0
         agent.last_move_pos = start
+        agent.last_wp_index = agent.waypoint_index
+        agent.last_waypoint_dist = _dist(
+            start, waypoints[min(agent.waypoint_index, len(waypoints) - 1)]
+        )
         carb.log_info(
-            f"[crowd.agents] Path planned: {len(waypoints)} pts from {start} -> {end}"
+            f"[crowd.agents] Path planned: {len(waypoints)} pts from {start} -> {end} "
+            f"(lane_bias={agent.lane_bias:.2f})"
         )
         return True
 
@@ -427,7 +451,7 @@ class NavigationSystem:
         if not agent.waypoints and agent.destination is not None:
             self.set_destination(agent, agent.destination)
         self._follow_waypoints(agent, dt)
-        self._update_retry(agent, dt)
+        self._update_replan(agent, dt)
 
     def _follow_waypoints(self, agent: "Agent", dt: float) -> None:
         if not agent.waypoints:
@@ -442,6 +466,9 @@ class NavigationSystem:
                 agent.retry_timer = 0.0
                 return
 
+        # Skip checkpoints the agent has already passed (crowd shove / overshoot)
+        self._advance_past_waypoints(agent)
+
         idx = min(agent.waypoint_index, len(agent.waypoints) - 1)
         target = agent.waypoints[idx]
         pos = agent.position
@@ -449,7 +476,6 @@ class NavigationSystem:
         dist = math.sqrt(dx * dx + dy * dy + dz * dz)
 
         if dist <= WAYPOINT_EPSILON:
-            agent.position = target
             if idx < len(agent.waypoints) - 1:
                 agent.waypoint_index = idx + 1
             return
@@ -459,30 +485,175 @@ class NavigationSystem:
         agent.position = (pos[0] + dx * inv, pos[1] + dy * inv, pos[2] + dz * inv)
         agent.perception["at_destination"] = False
 
-    def _update_retry(self, agent: "Agent", dt: float) -> None:
-        """If not seated and barely moving, replan after RETRY_TIMEOUT_S (loop forever)."""
+    def _advance_past_waypoints(self, agent: "Agent") -> None:
+        """Advance waypoint index when close to or past the current checkpoint.
+
+        Prevents backtracking after crowding pushes an agent beyond a node.
+        """
+        wps = agent.waypoints
+        if len(wps) < 2:
+            return
+        pos = agent.position
+        idx = agent.waypoint_index
+        # Never skip the final destination node via overshoot logic alone
+        while idx < len(wps) - 1:
+            curr = wps[idx]
+            nxt = wps[idx + 1]
+            d_curr = _dist(pos, curr)
+            if d_curr <= WAYPOINT_EPSILON:
+                idx += 1
+                continue
+
+            # Past the checkpoint if we're on the far side toward the next node
+            cx, cy, cz = curr
+            nx, ny, nz = nxt[0] - cx, nxt[1] - cy, nxt[2] - cz
+            ax, ay, az = pos[0] - cx, pos[1] - cy, pos[2] - cz
+            seg_len_sq = nx * nx + ny * ny + nz * nz
+            if seg_len_sq > 1e-8:
+                t = (ax * nx + ay * ny + az * nz) / seg_len_sq
+                if t > 0.0:
+                    idx += 1
+                    continue
+
+            # Or simply closer to the next checkpoint than this one
+            if _dist(pos, nxt) + 0.05 < d_curr:
+                idx += 1
+                continue
+            break
+
+        agent.waypoint_index = idx
+
+    def _update_replan(self, agent: "Agent", dt: float) -> None:
+        """Replan ~1/s when not closing on the current waypoint fast enough."""
         if agent.perception.get("at_destination"):
             agent.retry_timer = 0.0
             agent.last_move_pos = agent.position
             return
-        if agent.destination is None:
+        if agent.destination is None or not agent.waypoints or dt <= 0.0:
             return
 
-        moved = _dist(agent.position, agent.last_move_pos)
-        if moved >= MOVE_EPS:
+        idx = min(agent.waypoint_index, len(agent.waypoints) - 1)
+        target = agent.waypoints[idx]
+        wp_dist = _dist(agent.position, target)
+
+        # New checkpoint → reset progress tracking (don't treat index jumps as stall)
+        if int(getattr(agent, "last_wp_index", -1)) != idx:
+            agent.last_wp_index = idx
+            agent.last_waypoint_dist = wp_dist
             agent.retry_timer = 0.0
             agent.last_move_pos = agent.position
             return
 
-        agent.retry_timer += dt
+        dt_safe = min(dt, REPLAN_DT_CAP_S)
+        prev = float(getattr(agent, "last_waypoint_dist", wp_dist))
+        closing_mps = (prev - wp_dist) / dt_safe
+        agent.last_waypoint_dist = wp_dist
+        agent.last_move_pos = agent.position
+
+        if closing_mps >= MIN_WP_CLOSING_MPS:
+            agent.retry_timer = 0.0
+            return
+
+        agent.retry_timer += dt_safe
         if agent.retry_timer < RETRY_TIMEOUT_S:
             return
 
         agent.retry_timer = 0.0
-        agent.last_move_pos = agent.position
-        dest = agent.destination
-        carb.log_info(f"[crowd.agents] Retry path for {agent.agent_id} (stuck, not seated)")
-        self.set_destination(agent, dest)
+        bias = float(getattr(agent, "lane_bias", 0.0) or 0.0)
+        agent.lane_bias = max(-1.0, min(1.0, bias + self._lane_rng.uniform(-0.35, 0.35)))
+        agent.memory["lane_bias"] = agent.lane_bias
+        carb.log_info(
+            f"[crowd.agents] Replan {agent.agent_id} "
+            f"(wp closing={closing_mps:.2f} m/s < {MIN_WP_CLOSING_MPS})"
+        )
+        self.set_destination(agent, agent.destination)
+
+    def _bake_agent_radius(self) -> float:
+        """NavMesh bake agent radius — safe lower-bound clearance on the walkable mesh."""
+        inav = self._acquire()
+        if inav is None:
+            return DEFAULT_BAKE_RADIUS
+        navmesh = inav.get_navmesh()
+        if navmesh is None:
+            return DEFAULT_BAKE_RADIUS
+        try:
+            # Prefer min radius (tightest bake); fall back to max / default
+            if hasattr(navmesh, "get_agent_min_radius"):
+                r = float(navmesh.get_agent_min_radius())
+                if r > 1e-4:
+                    return r
+            if hasattr(navmesh, "get_agent_max_radius"):
+                r = float(navmesh.get_agent_max_radius())
+                if r > 1e-4:
+                    return r
+        except Exception:  # noqa: BLE001
+            pass
+        return DEFAULT_BAKE_RADIUS
+
+    def _apply_lane_offsets(self, waypoints: List[Vec3], agent: "Agent") -> List[Vec3]:
+        """Cheap lateral jitter on intermediate waypoints, capped by bake agent radius.
+
+        The NavMesh is already eroded by the bake radius, so offsets within that
+        radius stay on the walkable surface without corridor probing.
+        """
+        if len(waypoints) < 3:
+            return waypoints
+
+        up = _stage_up_axis()
+        bias = float(getattr(agent, "lane_bias", 0.0) or 0.0)
+        max_offset = max(0.05, self._bake_agent_radius() * LANE_RADIUS_SCALE)
+        offset = bias * max_offset
+
+        out: List[Vec3] = [waypoints[0]]
+        for i in range(1, len(waypoints) - 1):
+            prev_pt, curr, next_pt = waypoints[i - 1], waypoints[i], waypoints[i + 1]
+            tangent = _horiz_dir(prev_pt, next_pt, up) or _horiz_dir(prev_pt, curr, up)
+            if tangent is None or abs(offset) < 1e-4:
+                out.append(curr)
+                continue
+
+            left = (-tangent[1], tangent[0])
+            shifted = _offset_horizontal(curr, left, offset, up)
+            snapped = self.snap_to_navmesh(shifted)
+            out.append(snapped if snapped is not None else curr)
+
+        out.append(waypoints[-1])
+        return out
+
+
+def _stage_up_axis() -> str:
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        return "Y"
+    meta = stage.GetMetadata("upAxis")
+    return str(meta) if meta is not None else "Y"
+
+
+def _horiz_dir(a: Vec3, b: Vec3, up: str) -> Optional[Tuple[float, float]]:
+    if up == "Y":
+        dx, dz = b[0] - a[0], b[2] - a[2]
+    else:
+        dx, dz = b[0] - a[0], b[1] - a[1]
+    length = math.sqrt(dx * dx + dz * dz)
+    if length < 1e-8:
+        return None
+    return (dx / length, dz / length)
+
+
+def _offset_horizontal(
+    origin: Vec3, direction: Tuple[float, float], distance: float, up: str
+) -> Vec3:
+    if up == "Y":
+        return (
+            origin[0] + direction[0] * distance,
+            origin[1],
+            origin[2] + direction[1] * distance,
+        )
+    return (
+        origin[0] + direction[0] * distance,
+        origin[1] + direction[1] * distance,
+        origin[2],
+    )
 
 
 def _dist(a: Vec3, b: Vec3) -> float:

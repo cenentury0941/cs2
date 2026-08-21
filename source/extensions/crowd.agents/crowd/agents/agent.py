@@ -40,6 +40,10 @@ class Agent:
     radius: float = 0.35
     retry_timer: float = 0.0
     last_move_pos: Vec3 = (0.0, 0.0, 0.0)
+    last_waypoint_dist: float = 0.0
+    last_wp_index: int = -1
+    # Stable corridor lane preference in [-1, 1] (0 ≈ center); set at spawn / plan
+    lane_bias: float = 0.0
 
     def __post_init__(self) -> None:
         self.spawn_position = self.position
@@ -64,6 +68,10 @@ class Agent:
         self.waypoint_index = 0
         self.retry_timer = 0.0
         self.last_move_pos = self.spawn_position
+        self.last_waypoint_dist = 0.0
+        self.last_wp_index = -1
+        if "lane_bias" in self.memory:
+            self.lane_bias = float(self.memory["lane_bias"])
         if self.assigned_seat and self.memory.get("seat_position"):
             self.goal = self.assigned_seat
             self.destination = tuple(self.memory["seat_position"])  # type: ignore[assignment]

@@ -350,9 +350,11 @@ class Simulation:
                 seat_prim_path=seat.prim_path,
                 height=AGENT_HEIGHT,
                 radius=AGENT_RADIUS,
+                lane_bias=self._rng.triangular(-1.0, 1.0, 0.0),
             )
             agent.spawn_position = feet
             agent.memory["seat_position"] = list(seat_pos)
+            agent.memory["lane_bias"] = agent.lane_bias
             agent.perception["seat_known"] = True
             agent.perception["at_destination"] = False
             agent.waypoints = []

@@ -90,23 +90,29 @@ class Test(omni.kit.test.AsyncTestCase):
         self.assertLess(agent.position[0], 2.0)
         self.assertFalse(agent.perception.get("at_destination"))
 
-    async def test_retry_replans_when_stuck(self):
+    async def test_lane_offset_helpers(self):
+        from crowd.agents.navigation import _horiz_dir, _offset_horizontal
+
+        d = _horiz_dir((0.0, 0.0, 0.0), (0.0, 0.0, 2.0), "Y")
+        self.assertIsNotNone(d)
+        left = (-d[1], d[0])
+        p = _offset_horizontal((0.0, 0.0, 0.0), left, 1.0, "Y")
+        self.assertAlmostEqual(p[0], -1.0, places=5)
+        self.assertAlmostEqual(p[2], 0.0, places=5)
+
+    async def test_skips_overshot_waypoint(self):
         nav = NavigationSystem()
         agent = Agent(
-            agent_id="stuck",
-            prim_path="/World/CrowdAgents/Stuck",
-            position=(0.0, 0.0, 0.0),
+            agent_id="overshoot",
+            prim_path="/World/CrowdAgents/Overshoot",
+            position=(1.5, 0.0, 0.0),
             height=1.7,
         )
-        agent.destination = (5.0, 0.0, 0.0)
-        agent.waypoints = [(0.0, 0.0, 0.0), (5.0, 0.0, 0.0)]
-        agent.waypoint_index = 1
-        agent.last_move_pos = agent.position
-        agent.retry_timer = 0.99
-        # Not moving — should trip retry (≥1s) and clear timer via set_destination
-        # (path query may fail without NavMesh; still resets timer / last_move_pos)
-        nav._update_retry(agent, dt=0.05)
-        self.assertEqual(agent.retry_timer, 0.0)
+        agent.destination = (4.0, 0.0, 0.0)
+        agent.waypoints = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (4.0, 0.0, 0.0)]
+        agent.waypoint_index = 1  # targeting checkpoint at x=1, but already at x=1.5
+        nav._advance_past_waypoints(agent)
+        self.assertGreaterEqual(agent.waypoint_index, 2)
 
     async def test_window_smoke_buttons_exist(self):
         spawn = ui_test.find(
