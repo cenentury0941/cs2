@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Optional
+from typing import List, Optional, Sequence
 
 from config import CUDA_MODEL_ID, MAX_TOKENS, TEMPERATURE
 from decision_parse import fallback, parse_output
@@ -71,6 +71,10 @@ class CudaWorker:
                 device_map="auto",
                 trust_remote_code=True,
             )
+        # Left-pad so batched generate aligns new tokens on the right.
+        self._tokenizer.padding_side = "left"
+        if self._tokenizer.pad_token_id is None:
+            self._tokenizer.pad_token = self._tokenizer.eos_token
         self._model.eval()
         self._device = next(self._model.parameters()).device
         self._ready = True
@@ -78,36 +82,71 @@ class CudaWorker:
 
     def decide_one(self, agent: AgentInput) -> Decision:
         """Run inference for one agent; never raise — always return a Decision."""
+        return self.decide_many([agent])[0]
+
+    def decide_many(self, agents: Sequence[AgentInput]) -> List[Decision]:
+        """Batched inference: one generate() over independent per-agent prompts.
+
+        Each batch row is a single-agent chat (no cross-agent tokens). Attention
+        does not mix rows, so contexts stay isolated.
+        """
+        if not agents:
+            return []
         try:
-            raw = self._generate(agent)
-            intent, destination = parse_output(raw, agent)
-            return Decision(id=agent.id, intent=intent, destination=destination)
+            raws = self._generate_many(agents)
         except Exception:
-            logger.exception("Inference failed for agent %s; using fallback", agent.id)
-            return fallback(agent)
+            logger.exception(
+                "Batched inference failed for %d agents; per-agent fallback",
+                len(agents),
+            )
+            return [fallback(a) for a in agents]
+
+        decisions: List[Decision] = []
+        for agent, raw in zip(agents, raws):
+            try:
+                intent, destination = parse_output(raw, agent)
+                decisions.append(
+                    Decision(id=agent.id, intent=intent, destination=destination)
+                )
+            except Exception:
+                logger.exception("Parse failed for agent %s; using fallback", agent.id)
+                decisions.append(fallback(agent))
+        return decisions
+
+    def _prompt_for(self, agent: AgentInput) -> str:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_user_prompt(agent)},
+        ]
+        return self._tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
 
     def _generate(self, agent: AgentInput) -> str:
+        return self._generate_many([agent])[0]
+
+    def _generate_many(self, agents: Sequence[AgentInput]) -> List[str]:
         import torch
 
         if not self._ready or self._model is None or self._tokenizer is None:
             raise RuntimeError("Model is not ready")
 
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(agent)},
-        ]
-        prompt = self._tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
+        prompts = [self._prompt_for(agent) for agent in agents]
+        inputs = self._tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
         )
-        inputs = self._tokenizer(prompt, return_tensors="pt")
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
+        prompt_len = inputs["input_ids"].shape[-1]
 
         gen_kwargs = {
             "max_new_tokens": MAX_TOKENS,
             "do_sample": TEMPERATURE > 0,
-            "pad_token_id": self._tokenizer.eos_token_id,
+            "pad_token_id": self._tokenizer.pad_token_id,
+            "eos_token_id": self._tokenizer.eos_token_id,
         }
         if TEMPERATURE > 0:
             gen_kwargs["temperature"] = TEMPERATURE
@@ -116,9 +155,13 @@ class CudaWorker:
             with torch.inference_mode():
                 output_ids = self._model.generate(**inputs, **gen_kwargs)
 
-        prompt_len = inputs["input_ids"].shape[-1]
-        new_tokens = output_ids[0, prompt_len:]
-        return self._tokenizer.decode(new_tokens, skip_special_tokens=True)
+        texts: List[str] = []
+        for i in range(output_ids.shape[0]):
+            new_tokens = output_ids[i, prompt_len:]
+            texts.append(
+                self._tokenizer.decode(new_tokens, skip_special_tokens=True)
+            )
+        return texts
 
 
 worker = CudaWorker()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Optional
+from typing import Optional, Sequence
 
 from config import MAX_TOKENS, MODEL_ID, TEMPERATURE
 from decision_parse import fallback, parse_output
@@ -48,6 +48,10 @@ class MlxWorker:
         except Exception:
             logger.exception("Inference failed for agent %s; using fallback", agent.id)
             return fallback(agent)
+
+    def decide_many(self, agents: Sequence[AgentInput]) -> list[Decision]:
+        """mlx path: still one generate per agent (no true batch API yet)."""
+        return [self.decide_one(agent) for agent in agents]
 
     def _generate(self, agent: AgentInput) -> str:
         from mlx_lm import generate

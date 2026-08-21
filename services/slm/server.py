@@ -48,7 +48,11 @@ def ready() -> JSONResponse:
 
 @app.post("/v1/decide", response_model=DecideResponse)
 def decide(body: DecideRequest) -> DecideResponse:
-    decisions: list[Decision] = []
-    for agent in body.agents:
-        decisions.append(worker.decide_one(agent))
+    # Prefer one batched generate (CUDA). Mac mlx falls back to per-agent loop
+    # via decide_many → decide_one.
+    decide_many = getattr(worker, "decide_many", None)
+    if callable(decide_many):
+        decisions = decide_many(body.agents)
+    else:
+        decisions = [worker.decide_one(agent) for agent in body.agents]
     return DecideResponse(request_id=body.request_id, decisions=decisions)
