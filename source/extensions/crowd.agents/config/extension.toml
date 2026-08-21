@@ -22,6 +22,7 @@ repository = "https://github.com/NVIDIA-Omniverse/kit-app-template"
 [dependencies]
 "omni.kit.uiapp" = {}
 "omni.usd" = {}
+"omni.anim.navigation.core" = {}
 
 
 [settings]

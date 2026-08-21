@@ -29,6 +29,6 @@ class RuleBasedDecisionEngine(DecisionEngine):
             return "EXIT"
         if perception.get("at_destination"):
             return "IDLE"
-        if agent.goal and not perception.get("at_destination"):
+        if agent.destination is not None or agent.goal:
             return "GO_TO_SEAT"
         return "IDLE"

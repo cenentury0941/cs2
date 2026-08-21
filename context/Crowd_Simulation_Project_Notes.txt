@@ -81,7 +81,9 @@ Current Status
 -   Venue imported successfully
 -   crowd.agents extension scaffolded (Phase 1)
 -   Control panel + USD spawn/move cube smoke test
+-   NavMesh bundle enabled; cyan walkable bake verified
+-   Phase 2: Generate NavMesh, Spawn Agent, Set Destination, Run path-follow
 
 Next Step
 
-Generate a NavMesh and get a single agent walking before adding AI (Phase 2).
+Phase 3 — multiple agents with assigned seats.

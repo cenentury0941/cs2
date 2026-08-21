@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import carb
 import omni.usd
@@ -17,7 +17,9 @@ from .fire import FireSystem
 from .navigation import NavigationSystem
 
 TEST_CUBE_PATH = "/World/CrowdAgents/TestCube"
+AGENT_PRIM_PATH = "/World/CrowdAgents/Agent_001"
 AGENTS_ROOT = "/World/CrowdAgents"
+Vec3 = Tuple[float, float, float]
 
 
 class Simulation:
@@ -29,7 +31,7 @@ class Simulation:
         self._navigation = NavigationSystem()
         self._fire = FireSystem()
         self._brain: DecisionEngine = RuleBasedDecisionEngine()
-        self._status = "Ready — open a venue or spawn a test cube."
+        self._status = "Ready — bake NavMesh, spawn an agent, set destination, Run."
         self._log_lines: List[str] = []
 
     @property
@@ -48,15 +50,43 @@ class Simulation:
         for agent in self._agents:
             agent.perception["fire_visible"] = self._fire.is_visible_to(agent)
             if fire_active and not agent.perception.get("fire_visible"):
-                # Global emergency flag for MVP; refine with volumes later.
                 agent.perception["fire_visible"] = True
 
             intent = self._brain.decide(agent)
+            if (
+                intent == "GO_TO_SEAT"
+                and agent.destination is not None
+                and not agent.perception.get("at_destination")
+            ):
+                intent = "WALK"
+
             agent.intent = intent
             self._navigation.apply_intent(agent, intent, dt)
             agent.sync_to_usd()
 
+        if self._agents:
+            a = self._agents[0]
+            if a.perception.get("at_destination"):
+                self._status = f"{a.agent_id} arrived"
+            else:
+                p = a.position
+                self._status = (
+                    f"Running — {a.agent_id} @ ({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f}) "
+                    f"intent={a.intent}"
+                )
+
     def set_running(self, running: bool) -> None:
+        if running and not self._agents:
+            self._status = "Spawn an agent first."
+            self._log(self._status)
+            return
+        if running:
+            for agent in self._agents:
+                if agent.destination is not None and not agent.waypoints:
+                    self._navigation.set_destination(agent, agent.destination)
+                if agent.destination is not None:
+                    agent.perception["at_destination"] = False
+                    agent.goal = agent.goal or "destination"
         self._running = running
         self._status = "Running" if running else "Paused"
         self._log(self._status)
@@ -92,6 +122,7 @@ class Simulation:
                 path = f"{dirname}{filename}".replace("\\", "/")
             ok = omni.usd.get_context().open_stage(path)
             if ok:
+                self._agents.clear()
                 self._status = f"Opened: {filename}"
                 self._log(self._status)
             else:
@@ -130,7 +161,7 @@ class Simulation:
         xformable = UsdGeom.Xformable(cube.GetPrim())
         xformable.ClearXformOpOrder()
         translate_op = xformable.AddTranslateOp()
-        translate_op.Set(Gf.Vec3d(0.0, 0.0, 0.5))
+        translate_op.Set(Gf.Vec3d(*self._lift_point((0.0, 0.0, 0.0), 0.5)))
 
         self._status = f"Spawned cube at {TEST_CUBE_PATH}"
         self._log(self._status)
@@ -173,21 +204,138 @@ class Simulation:
 
     def generate_navmesh(self) -> None:
         ok = self._navigation.generate_navmesh()
-        self._status = (
-            "NavMesh generate requested (stub — Phase 2)."
-            if ok
-            else "NavMesh generation not available yet."
-        )
+        if ok:
+            self._status = "NavMesh bake OK — spawn an agent."
+        else:
+            self._status = (
+                "NavMesh bake failed — create/scale Include Volume over the floor, "
+                "then try again (or bake from Window > Navigation > NavMesh)."
+            )
         self._log(self._status)
 
     def spawn_agents(self) -> None:
-        self._status = "Spawn Agents stub — Phase 3 (need NavMesh + seats)."
+        """Phase 2: spawn a single capsule agent snapped to the NavMesh."""
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            self._status = "No stage open."
+            return
+
+        if not self._navigation.has_navmesh():
+            # Try bake once; user may already have cyan mesh from UI bake
+            if not self._navigation.generate_navmesh() and not self._navigation.has_navmesh():
+                self._status = "No NavMesh — bake first (Generate NavMesh)."
+                self._log(self._status)
+                return
+
+        spawn = self._pick_spawn_point()
+        if spawn is None:
+            self._status = "Could not find a NavMesh spawn point."
+            self._log(self._status)
+            return
+
+        self._ensure_xform(stage, "/World")
+        self._ensure_xform(stage, AGENTS_ROOT)
+        if stage.GetPrimAtPath(AGENT_PRIM_PATH):
+            stage.RemovePrim(AGENT_PRIM_PATH)
+
+        height = 1.7
+        radius = 0.3
+        capsule = UsdGeom.Capsule.Define(stage, AGENT_PRIM_PATH)
+        capsule.CreateHeightAttr(max(height - 2.0 * radius, 0.1))
+        capsule.CreateRadiusAttr(radius)
+        up = self._up_axis(stage)
+        capsule.CreateAxisAttr(UsdGeom.Tokens.y if up == "Y" else UsdGeom.Tokens.z)
+
+        # Position is capsule center; snap point is on the floor
+        center = self._lift_point(spawn, height * 0.5)
+        xformable = UsdGeom.Xformable(capsule.GetPrim())
+        xformable.ClearXformOpOrder()
+        xformable.AddTranslateOp().Set(Gf.Vec3d(*center))
+
+        agent = Agent(
+            agent_id="Agent_001",
+            prim_path=AGENT_PRIM_PATH,
+            position=center,
+            goal="destination",
+            height=height,
+        )
+        agent.spawn_position = center
+        self._agents = [agent]
+
+        self._status = (
+            f"Spawned {agent.agent_id} at ({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) "
+            "— set destination, then Run."
+        )
+        self._log(self._status)
+
+    def set_random_destination(self) -> None:
+        if not self._agents:
+            self._status = "Spawn an agent first."
+            return
+
+        dest = self._navigation.random_point(seed_key="crowd.dest")
+        if dest is None:
+            # Offset from current position as a simple fallback
+            agent = self._agents[0]
+            dest = self._offset_on_ground(agent.position, 5.0, 0.0)
+            snapped = self._navigation.snap_to_navmesh(dest)
+            dest = snapped or dest
+
+        agent = self._agents[0]
+        # Destination on floor; agent path uses center — lift end for path query from center
+        floor_dest = dest
+        dest_center = self._lift_point(floor_dest, agent.height * 0.5)
+        # Re-plan from current position using floor-level snaps inside navigation
+        ok = self._navigation.set_destination(agent, dest_center)
+        agent.goal = "destination"
+        agent.sync_to_usd()
+        if ok:
+            d = agent.destination or dest_center
+            self._status = (
+                f"Destination set ({d[0]:.1f}, {d[1]:.1f}, {d[2]:.1f}) — "
+                f"{len(agent.waypoints)} waypoints. Press Run."
+            )
+        else:
+            self._status = "Failed to set destination."
         self._log(self._status)
 
     def trigger_fire(self) -> None:
         self._fire.trigger()
         self._status = "Fire triggered (stub VFX — Phase 4)."
         self._log(self._status)
+
+    def _pick_spawn_point(self) -> Optional[Vec3]:
+        point = self._navigation.random_point(seed_key="crowd.spawn")
+        if point is not None:
+            return point
+        # Try origin / common floor guesses
+        for guess in ((0.0, 0.0, 0.0), (0.0, 0.0, 0.1), (0.0, 0.1, 0.0), (1.0, 0.0, 1.0)):
+            snapped = self._navigation.snap_to_navmesh(guess)
+            if snapped is not None:
+                return snapped
+        return None
+
+    def _up_axis(self, stage) -> str:
+        up = stage.GetMetadata("upAxis")
+        if up is None:
+            return "Y"
+        return str(up)
+
+    def _lift_point(self, floor_point: Vec3, amount: float) -> Vec3:
+        stage = omni.usd.get_context().get_stage()
+        up = self._up_axis(stage) if stage else "Y"
+        x, y, z = floor_point
+        if up == "Z":
+            return (x, y, z + amount)
+        return (x, y + amount, z)
+
+    def _offset_on_ground(self, point: Vec3, dx: float, dz_or_dy: float) -> Vec3:
+        stage = omni.usd.get_context().get_stage()
+        up = self._up_axis(stage) if stage else "Y"
+        x, y, z = point
+        if up == "Z":
+            return (x + dx, y + dz_or_dy, z)
+        return (x + dx, y, z + dz_or_dy)
 
     def _ensure_xform(self, stage, path: str) -> None:
         if not stage.GetPrimAtPath(path):
