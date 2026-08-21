@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from inference import worker
 from schemas import DecideRequest, DecideResponse, Decision
 
 logger = logging.getLogger(__name__)
+
+_backend = os.environ.get("SLM_BACKEND", "mlx").strip().lower()
+if _backend in ("cuda", "torch", "aws"):
+    from inference_cuda import worker
+else:
+    from inference import worker
 
 
 @asynccontextmanager

@@ -1,0 +1,15 @@
+# AWS Ubuntu / CUDA stack for services/slm (g6e.xlarge).
+# Install inside a dedicated venv (.venv-cuda), not the Mac mlx .venv.
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.0.0
+httpx>=0.27.0
+transformers>=4.46.0
+accelerate>=1.0.0
+sentencepiece>=0.2.0
+protobuf>=4.0.0
+# Install a CUDA build of torch that matches the instance driver.
+# Example (CUDA 12.8 / recent drivers on G6e):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch>=2.4.0

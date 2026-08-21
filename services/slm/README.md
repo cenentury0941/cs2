@@ -45,9 +45,40 @@ source .venv/bin/activate
 python smoke_test.py
 ```
 
-## AWS / Ubuntu later
+## AWS Ubuntu (CUDA)
 
-Mac uses `mlx_lm` as the worker backend. Cloud deploy will keep the same
-`/health`, `/ready`, and `/v1/decide` contract and swap the worker for a CUDA
-stack (e.g. vLLM) plus multiple instances and load distribution. Do not change
-the HTTP schema unilaterally.
+Same HTTP contract; worker is Hugging Face `transformers` on NVIDIA GPU
+(not mlx). On the g6e.xlarge instance:
+
+```bash
+cd /home/ubuntu/cs/services/slm
+bash deploy_aws.sh
+```
+
+Or manually:
+
+```bash
+cd services/slm
+python3 -m venv .venv-cuda
+source .venv-cuda/bin/activate
+pip install -r requirements-cuda.txt
+# If pip's default torch is CPU-only, install a CUDA wheel first, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+python run_aws.py
+```
+
+Defaults: bind `0.0.0.0:8080`, model `microsoft/Phi-4-mini-instruct`,
+`SLM_BACKEND=cuda`.
+
+Reach the API from a laptop without opening the security group:
+
+```bash
+aws ssm start-session \
+  --target <instance-id> --region us-east-1 \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["8080"],"localPortNumber":["8080"]}'
+```
+
+Then `curl http://127.0.0.1:8080/health` / `python smoke_test.py`.
+
+Do not change the `/v1/decide` schema unilaterally.

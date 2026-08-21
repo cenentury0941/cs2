@@ -43,7 +43,8 @@ gitlabSSH/
 # Per-agent role brief (local only)
 agent.md
 
-# Local SLM venv
+# Local SLM venvs
 services/slm/.venv/
+services/slm/.venv-cuda/
 **/__pycache__/
 .env
