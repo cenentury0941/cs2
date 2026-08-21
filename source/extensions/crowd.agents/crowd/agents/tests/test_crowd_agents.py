@@ -3,12 +3,28 @@
 
 import omni.kit.test
 import omni.kit.ui_test as ui_test
+from pxr import Gf
 
 from crowd.agents.ai import RuleBasedDecisionEngine
 from crowd.agents.agent import Agent
 from crowd.agents.navigation import NavigationSystem
 from crowd.agents.scene import SEAT_PATTERN, SpawnZone, point_in_spawn_horizontal, sample_in_spawn
 from crowd.agents.ui import WINDOW_TITLE
+
+
+def _make_zone(u0=0.0, u1=4.0, v0=0.0, v1=2.0) -> SpawnZone:
+    return SpawnZone(
+        prim_path="/World/Spawn",
+        geom_path="/World/Spawn/Plane",
+        local_min=(u0, v0, -0.01),
+        local_max=(u1, v1, 0.01),
+        axis_u=0,
+        axis_v=1,
+        axis_n=2,
+        local_to_world=Gf.Matrix4d(1.0),
+        world_min=(u0, v0, -0.01),
+        world_max=(u1, v1, 0.01),
+    )
 
 
 class Test(omni.kit.test.AsyncTestCase):
@@ -42,19 +58,17 @@ class Test(omni.kit.test.AsyncTestCase):
         self.assertIsNone(SEAT_PATTERN.match("Seat_24"))
         self.assertEqual(int(SEAT_PATTERN.match("Seat_007").group(1)), 7)
 
-    async def test_spawn_xy_bounds_z_up(self):
-        zone = SpawnZone(
-            prim_path="/World/Spawn",
-            min_corner=(0.0, 0.0, -0.1),
-            max_corner=(4.0, 2.0, 0.1),
-        )
-        for _ in range(20):
+    async def test_spawn_samples_fill_xy_bounds(self):
+        zone = _make_zone(0.0, 4.0, 0.0, 2.0)
+        xs, ys = [], []
+        for _ in range(40):
             p = sample_in_spawn(zone)
-            self.assertGreaterEqual(p[0], 0.0)
-            self.assertLessEqual(p[0], 4.0)
-            self.assertGreaterEqual(p[1], 0.0)
-            self.assertLessEqual(p[1], 2.0)
             self.assertTrue(point_in_spawn_horizontal(p, zone))
+            xs.append(p[0])
+            ys.append(p[1])
+        # Must not collapse to a single point (the old origin bug)
+        self.assertGreater(max(xs) - min(xs), 1.0)
+        self.assertGreater(max(ys) - min(ys), 0.5)
 
     async def test_path_follow_steps_toward_waypoint(self):
         nav = NavigationSystem()

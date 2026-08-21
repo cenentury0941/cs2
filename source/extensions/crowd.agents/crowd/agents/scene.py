@@ -13,13 +13,14 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import carb
 import omni.usd
-from pxr import Usd, UsdGeom
+from pxr import Gf, Usd, UsdGeom
 
 Vec3 = Tuple[float, float, float]
 
 SPAWN_NAME = "Spawn"
 SEAT_PATTERN = re.compile(r"^Seat_(\d{3})$")
 EXIT_NAMES = ("Exit_A", "Exit_B")
+_MIN_PLANE_EXTENT = 0.25  # meters; below this AABB is treated as degenerate
 
 
 @dataclass
@@ -39,29 +40,42 @@ class ExitInfo:
 
 @dataclass
 class SpawnZone:
-    """World AABB of the Spawn plane.
+    """Spawn area derived from the Spawn mesh local plane, in world space.
 
-    Agents spawn at random **world X/Y** inside this rectangle (Blender Z-up
-    plane), then feet height is taken from the NavMesh. Seats are separate.
+    Samples randomly in the object's local X/Y plane extents (the two largest
+    local axes if needed), then converts to world. NavMesh only supplies height.
     """
 
     prim_path: str
-    min_corner: Vec3
-    max_corner: Vec3
+    geom_path: str
+    # Local-space AABB of the geometry (object space)
+    local_min: Vec3
+    local_max: Vec3
+    # Indices of the two local axes that span the plane (usually 0,1 = X,Y)
+    axis_u: int
+    axis_v: int
+    axis_n: int
+    # World matrix of the geometry prim
+    local_to_world: object  # Gf.Matrix4d
+    # Cached world AABB (for logging / rough checks)
+    world_min: Vec3
+    world_max: Vec3
 
     @property
-    def x_range(self) -> Tuple[float, float]:
-        a, b = self.min_corner[0], self.max_corner[0]
+    def u_range(self) -> Tuple[float, float]:
+        a, b = self.local_min[self.axis_u], self.local_max[self.axis_u]
         return (a, b) if a <= b else (b, a)
 
     @property
-    def y_range(self) -> Tuple[float, float]:
-        a, b = self.min_corner[1], self.max_corner[1]
+    def v_range(self) -> Tuple[float, float]:
+        a, b = self.local_min[self.axis_v], self.local_max[self.axis_v]
         return (a, b) if a <= b else (b, a)
 
     @property
-    def z_mid(self) -> float:
-        return 0.5 * (self.min_corner[2] + self.max_corner[2])
+    def area(self) -> float:
+        u0, u1 = self.u_range
+        v0, v1 = self.v_range
+        return max(0.0, u1 - u0) * max(0.0, v1 - v0)
 
 
 def get_stage():
@@ -95,26 +109,33 @@ def world_translation(prim: Usd.Prim) -> Optional[Vec3]:
     return (float(t[0]), float(t[1]), float(t[2]))
 
 
+def _range_from_bbox3d(bbox) -> Optional[Tuple[Gf.Vec3d, Gf.Vec3d]]:
+    try:
+        if hasattr(bbox, "ComputeAlignedRange"):
+            rng = bbox.ComputeAlignedRange()
+        elif hasattr(bbox, "GetRange"):
+            rng = bbox.GetRange()
+        else:
+            rng = bbox.GetBox()
+        return rng.GetMin(), rng.GetMax()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def world_bbox(prim: Usd.Prim) -> Optional[Tuple[Vec3, Vec3]]:
-    """Return (min, max) world AABB, or None."""
     if not prim or not prim.IsValid():
         return None
     boundable = UsdGeom.Boundable(prim)
     if boundable:
         try:
             bbox = boundable.ComputeWorldBound(Usd.TimeCode.Default())
-            if hasattr(bbox, "ComputeAlignedRange"):
-                rng = bbox.ComputeAlignedRange()
-            elif hasattr(bbox, "GetRange"):
-                rng = bbox.GetRange()
-            else:
-                rng = bbox.GetBox()
-            mn = rng.GetMin()
-            mx = rng.GetMax()
-            return (
-                (float(mn[0]), float(mn[1]), float(mn[2])),
-                (float(mx[0]), float(mx[1]), float(mx[2])),
-            )
+            pair = _range_from_bbox3d(bbox)
+            if pair:
+                mn, mx = pair
+                return (
+                    (float(mn[0]), float(mn[1]), float(mn[2])),
+                    (float(mx[0]), float(mx[1]), float(mx[2])),
+                )
         except Exception as exc:  # noqa: BLE001
             carb.log_warn(f"[crowd.agents] world_bbox failed for {prim.GetPath()}: {exc}")
 
@@ -128,6 +149,94 @@ def world_bbox(prim: Usd.Prim) -> Optional[Tuple[Vec3, Vec3]]:
     )
 
 
+def local_bbox(prim: Usd.Prim) -> Optional[Tuple[Vec3, Vec3]]:
+    """Local-space AABB of a boundable prim."""
+    if not prim or not prim.IsValid():
+        return None
+
+    # Prefer authored extent (mesh local)
+    for attr_name in ("extent", "primvars:extent"):
+        attr = prim.GetAttribute(attr_name)
+        if attr and attr.HasAuthoredValueOpinion():
+            try:
+                ext = attr.Get()
+                if ext is not None and len(ext) >= 2:
+                    mn, mx = ext[0], ext[1]
+                    return (
+                        (float(mn[0]), float(mn[1]), float(mn[2])),
+                        (float(mx[0]), float(mx[1]), float(mx[2])),
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
+    boundable = UsdGeom.Boundable(prim)
+    if not boundable:
+        return None
+    try:
+        bbox = boundable.ComputeLocalBound(Usd.TimeCode.Default())
+        pair = _range_from_bbox3d(bbox)
+        if pair:
+            mn, mx = pair
+            return (
+                (float(mn[0]), float(mn[1]), float(mn[2])),
+                (float(mx[0]), float(mx[1]), float(mx[2])),
+            )
+    except Exception as exc:  # noqa: BLE001
+        carb.log_warn(f"[crowd.agents] local_bbox failed for {prim.GetPath()}: {exc}")
+    return None
+
+
+def _plane_axes(local_min: Vec3, local_max: Vec3) -> Tuple[int, int, int]:
+    """Return (axis_u, axis_v, axis_n) — two largest extents + thinnest (normal)."""
+    extents = [abs(local_max[i] - local_min[i]) for i in range(3)]
+    order = sorted(range(3), key=lambda i: extents[i])
+    axis_n = order[0]
+    axis_u, axis_v = order[1], order[2]
+    # Prefer X,Y as (u,v) when they are the large pair (Blender plane)
+    if {axis_u, axis_v} == {0, 1}:
+        axis_u, axis_v = 0, 1
+    return axis_u, axis_v, axis_n
+
+
+def _bbox_area(mn: Vec3, mx: Vec3) -> float:
+    extents = sorted([abs(mx[i] - mn[i]) for i in range(3)])
+    return extents[1] * extents[2]
+
+
+def _iter_boundable_prims(root: Usd.Prim) -> List[Usd.Prim]:
+    out = []
+    if not root or not root.IsValid():
+        return out
+    stack = [root]
+    while stack:
+        prim = stack.pop()
+        if UsdGeom.Boundable(prim):
+            out.append(prim)
+        stack.extend(list(prim.GetChildren()))
+    return out
+
+
+def _pick_spawn_geometry(spawn_prim: Usd.Prim) -> Optional[Usd.Prim]:
+    """Choose the Spawn prim or a descendant with the largest planar area."""
+    best = None
+    best_area = -1.0
+    for prim in _iter_boundable_prims(spawn_prim):
+        lb = local_bbox(prim)
+        wb = world_bbox(prim)
+        area_l = _bbox_area(lb[0], lb[1]) if lb else 0.0
+        area_w = _bbox_area(wb[0], wb[1]) if wb else 0.0
+        area = max(area_l, area_w)
+        if area > best_area:
+            best_area = area
+            best = prim
+    if best is None or best_area < _MIN_PLANE_EXTENT * _MIN_PLANE_EXTENT:
+        carb.log_warn(
+            f"[crowd.agents] Spawn geometry under {spawn_prim.GetPath()} "
+            f"has tiny area ({best_area:.4f}). Check scale is applied."
+        )
+    return best
+
+
 def find_spawn_zone(stage=None) -> Optional[SpawnZone]:
     stage = stage or get_stage()
     if stage is None:
@@ -135,16 +244,58 @@ def find_spawn_zone(stage=None) -> Optional[SpawnZone]:
     prims = find_prims_named(stage, SPAWN_NAME)
     if not prims:
         return None
-    prim = prims[0]
-    bbox = world_bbox(prim)
-    if bbox is None:
+    spawn_root = prims[0]
+    geom = _pick_spawn_geometry(spawn_root)
+    if geom is None:
         return None
-    zone = SpawnZone(prim_path=str(prim.GetPath()), min_corner=bbox[0], max_corner=bbox[1])
-    carb.log_info(
-        f"[crowd.agents] Spawn zone {zone.prim_path} "
-        f"X=[{zone.x_range[0]:.2f},{zone.x_range[1]:.2f}] "
-        f"Y=[{zone.y_range[0]:.2f},{zone.y_range[1]:.2f}]"
+
+    lb = local_bbox(geom)
+    wb = world_bbox(geom)
+    if lb is None and wb is not None:
+        # Degenerate local — fall back to treating world AABB as local with identity
+        lb = wb
+    if lb is None:
+        return None
+    if wb is None:
+        wb = lb
+
+    axis_u, axis_v, axis_n = _plane_axes(lb[0], lb[1])
+    # Force X,Y when those extents are usable (user contract: object X/Y bounds)
+    ext = [abs(lb[1][i] - lb[0][i]) for i in range(3)]
+    if ext[0] >= _MIN_PLANE_EXTENT and ext[1] >= _MIN_PLANE_EXTENT:
+        axis_u, axis_v, axis_n = 0, 1, 2
+
+    xformable = UsdGeom.Xformable(geom)
+    mat = (
+        xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        if xformable
+        else Gf.Matrix4d(1.0)
     )
+
+    zone = SpawnZone(
+        prim_path=str(spawn_root.GetPath()),
+        geom_path=str(geom.GetPath()),
+        local_min=lb[0],
+        local_max=lb[1],
+        axis_u=axis_u,
+        axis_v=axis_v,
+        axis_n=axis_n,
+        local_to_world=mat,
+        world_min=wb[0],
+        world_max=wb[1],
+    )
+    u0, u1 = zone.u_range
+    v0, v1 = zone.v_range
+    carb.log_info(
+        f"[crowd.agents] Spawn zone root={zone.prim_path} geom={zone.geom_path} "
+        f"local axes u={axis_u}[{u0:.2f},{u1:.2f}] v={axis_v}[{v0:.2f},{v1:.2f}] "
+        f"area={zone.area:.2f}"
+    )
+    if zone.area < _MIN_PLANE_EXTENT * _MIN_PLANE_EXTENT:
+        carb.log_warn(
+            "[crowd.agents] Spawn plane area is near zero — "
+            "Apply Scale on the Spawn mesh in Blender/USD."
+        )
     return zone
 
 
@@ -196,75 +347,123 @@ def find_exits(stage=None) -> List[ExitInfo]:
     return exits
 
 
-def sample_in_spawn_xy(zone: SpawnZone, rng: Optional[random.Random] = None) -> Vec3:
-    """Random point in Spawn's world X/Y rectangle, Z at plane mid-height."""
+def sample_in_spawn_local(zone: SpawnZone, rng: Optional[random.Random] = None) -> Vec3:
+    """Random world-space point on the Spawn plane (local X/Y extents)."""
     rng = rng or random
-    x0, x1 = zone.x_range
-    y0, y1 = zone.y_range
+    u0, u1 = zone.u_range
+    v0, v1 = zone.v_range
+    n0 = zone.local_min[zone.axis_n]
+    n1 = zone.local_max[zone.axis_n]
+    n_mid = 0.5 * (n0 + n1)
 
     def _u(lo: float, hi: float) -> float:
-        if abs(hi - lo) < 1e-6:
+        if abs(hi - lo) < 1e-8:
             return lo
         return rng.uniform(lo, hi)
 
-    return (_u(x0, x1), _u(y0, y1), zone.z_mid)
+    local = [0.0, 0.0, 0.0]
+    local[zone.axis_u] = _u(u0, u1)
+    local[zone.axis_v] = _u(v0, v1)
+    local[zone.axis_n] = n_mid
+
+    world = zone.local_to_world.Transform(Gf.Vec3d(local[0], local[1], local[2]))
+    return (float(world[0]), float(world[1]), float(world[2]))
+
+
+def sample_in_spawn_xy(zone: SpawnZone, rng: Optional[random.Random] = None) -> Vec3:
+    """Back-compat name — samples the Spawn object's plane bounds in local X/Y."""
+    return sample_in_spawn_local(zone, rng=rng)
 
 
 def point_in_spawn_xy(point: Vec3, zone: SpawnZone, margin: float = 0.0) -> bool:
-    """True if point's world X/Y lie inside the Spawn rectangle."""
-    x0, x1 = zone.x_range
-    y0, y1 = zone.y_range
-    return (x0 - margin) <= point[0] <= (x1 + margin) and (y0 - margin) <= point[1] <= (
-        y1 + margin
-    )
+    """Project world point into Spawn local space; test u/v within plane bounds."""
+    try:
+        inv = zone.local_to_world.GetInverse()
+        local = inv.Transform(Gf.Vec3d(point[0], point[1], point[2]))
+    except Exception:  # noqa: BLE001
+        # Fallback: world AABB on the two largest world axes
+        return (
+            zone.world_min[0] - margin <= point[0] <= zone.world_max[0] + margin
+            and zone.world_min[1] - margin <= point[1] <= zone.world_max[1] + margin
+        )
+
+    u0, u1 = zone.u_range
+    v0, v1 = zone.v_range
+    u = float(local[zone.axis_u])
+    v = float(local[zone.axis_v])
+    return (u0 - margin) <= u <= (u1 + margin) and (v0 - margin) <= v <= (v1 + margin)
 
 
 def sample_spawn_feet_on_navmesh(
     zone: SpawnZone,
     snap_fn: Callable[[Vec3], Optional[Vec3]],
     rng: Optional[random.Random] = None,
-    attempts: int = 48,
+    attempts: int = 64,
+    existing: Optional[List[Vec3]] = None,
+    min_spacing: float = 0.7,
 ) -> Optional[Vec3]:
-    """Pick random Spawn X/Y, snap to NavMesh, keep X/Y inside Spawn.
-
-    Height (Z) comes from the NavMesh so feet sit on walkable geometry.
-    """
+    """Random point on Spawn plane (local X/Y), snapped onto NavMesh height."""
     rng = rng or random
+    existing = existing or []
+
     for _ in range(attempts):
-        guess = sample_in_spawn_xy(zone, rng=rng)
+        guess = sample_in_spawn_local(zone, rng=rng)
         snapped = snap_fn(guess)
         if snapped is None:
-            # Try a few vertical probes in case the plane sits slightly off the mesh
-            for dz in (0.0, 0.25, -0.25, 0.5, -0.5, 1.0):
-                snapped = snap_fn((guess[0], guess[1], guess[2] + dz))
+            for delta in (0.0, 0.2, -0.2, 0.5, -0.5, 1.0, -1.0):
+                # Nudge along world up guesses
+                for axis in (2, 1):
+                    probe = [guess[0], guess[1], guess[2]]
+                    probe[axis] = guess[axis] + delta
+                    snapped = snap_fn((probe[0], probe[1], probe[2]))
+                    if snapped is not None:
+                        break
                 if snapped is not None:
                     break
         if snapped is None:
             continue
 
-        # Stay in Spawn X/Y; only adopt NavMesh height
-        feet = (guess[0], guess[1], snapped[2])
-        if not point_in_spawn_xy(feet, zone, margin=0.05):
-            continue
+        # Keep planar (u/v) position from the Spawn sample; take height from NavMesh.
+        # Reconstruct by blending: use snapped height axis from stage up.
+        up = up_axis()
+        if up == "Y":
+            feet = (guess[0], snapped[1], guess[2])
+        else:
+            feet = (guess[0], guess[1], snapped[2])
 
-        # Confirm the locked X/Y still projects onto the mesh
-        verify = snap_fn(feet)
-        if verify is None:
+        # If locking XZ/XY drifted off the plane, prefer full snap if still on plane
+        if not point_in_spawn_xy(feet, zone, margin=0.15):
+            if point_in_spawn_xy(snapped, zone, margin=0.35):
+                feet = snapped
+            else:
+                continue
+        else:
+            verify = snap_fn(feet)
+            if verify is not None:
+                if up == "Y":
+                    feet = (feet[0], verify[1], feet[2])
+                else:
+                    feet = (feet[0], feet[1], verify[2])
+
+        # Spacing vs already placed agents
+        ok = True
+        for other in existing:
+            dx = feet[0] - other[0]
+            dy = feet[1] - other[1]
+            dz = feet[2] - other[2]
+            if (dx * dx + dy * dy + dz * dz) < (min_spacing * min_spacing):
+                ok = False
+                break
+        if not ok:
             continue
-        # If snap pulls far in X/Y, reject (Spawn must overlap NavMesh)
-        dx = verify[0] - feet[0]
-        dy = verify[1] - feet[1]
-        if (dx * dx + dy * dy) > (0.75 * 0.75):
-            continue
-        return (feet[0], feet[1], verify[2])
+        return feet
 
     return None
 
 
-# Back-compat aliases used by older tests
 def sample_in_spawn(zone: SpawnZone, stage=None, rng: Optional[random.Random] = None) -> Vec3:
     _ = stage
-    return sample_in_spawn_xy(zone, rng=rng)
+    return sample_in_spawn_local(zone, rng=rng)
 
 
 def point_in_spawn_horizontal(
@@ -299,7 +498,9 @@ def describe_scene(stage=None) -> Dict[str, object]:
     exits = find_exits(stage)
     return {
         "spawn": spawn.prim_path if spawn else None,
-        "spawn_xy": (spawn.x_range, spawn.y_range) if spawn else None,
+        "spawn_geom": spawn.geom_path if spawn else None,
+        "spawn_area": spawn.area if spawn else None,
+        "spawn_uv": (spawn.u_range, spawn.v_range) if spawn else None,
         "seat_count": len(seats),
         "seat_names": [s.name for s in seats],
         "exits": [e.name for e in exits],

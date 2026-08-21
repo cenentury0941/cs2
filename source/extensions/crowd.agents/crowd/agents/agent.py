@@ -37,6 +37,7 @@ class Agent:
     waypoint_index: int = 0
     speed_mps: float = 1.4
     height: float = 1.7
+    radius: float = 0.35
 
     def __post_init__(self) -> None:
         self.spawn_position = self.position

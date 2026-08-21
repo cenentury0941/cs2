@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from typing import List, Optional, Tuple
 
@@ -79,6 +80,10 @@ class Simulation:
 
             agent.intent = intent
             self._navigation.apply_intent(agent, intent, dt)
+
+        self._separate_agents()
+
+        for agent in self._agents:
             agent.sync_to_usd()
 
             if agent.perception.get("at_destination"):
@@ -291,21 +296,33 @@ class Simulation:
         agents: List[Agent] = []
         assigned_seats = seats[:wanted]
         up = scene_util.up_axis(stage)
+        placed: List[Vec3] = []
+
+        if spawn_zone.area < 0.05:
+            self._status = (
+                f"Spawn plane area too small ({spawn_zone.area:.3f}). "
+                f"geom={spawn_zone.geom_path} — Apply Scale so X/Y extents are real meters."
+            )
+            self._log(self._status)
+            return
 
         for i, seat in enumerate(assigned_seats):
             feet = scene_util.sample_spawn_feet_on_navmesh(
                 spawn_zone,
                 snap_fn=self._navigation.snap_to_navmesh,
                 rng=self._rng,
+                existing=placed,
+                min_spacing=0.75,
             )
             if feet is None:
                 self._status = (
-                    f"Could only place {len(agents)} agents inside Spawn X/Y on NavMesh. "
-                    "Ensure the Spawn plane overlaps the baked NavMesh."
+                    f"Could only place {len(agents)} agents on Spawn plane + NavMesh "
+                    f"(area={spawn_zone.area:.1f}, geom={spawn_zone.geom_path})."
                 )
                 self._log(self._status)
                 break
 
+            placed.append(feet)
             prim_path = f"{AGENTS_ROOT}/Agent_{i + 1:03d}"
             self._create_capsule(stage, prim_path, up)
 
@@ -319,12 +336,12 @@ class Simulation:
                 assigned_seat=seat.name,
                 seat_prim_path=seat.prim_path,
                 height=AGENT_HEIGHT,
+                radius=AGENT_RADIUS + 0.05,
             )
             agent.spawn_position = feet
             agent.memory["seat_position"] = list(seat_pos)
             agent.perception["seat_known"] = True
             agent.perception["at_destination"] = False
-            # Idle at Spawn until Run — do not plan seat paths yet
             agent.waypoints = []
             agent.waypoint_index = 0
             agent.intent = "IDLE"
@@ -334,20 +351,19 @@ class Simulation:
         self._agents = agents
         if not agents:
             self._status = (
-                "Failed to spawn inside Spawn X/Y on NavMesh — "
-                "check Spawn overlaps the cyan walkable area."
+                "Failed to spawn on Spawn plane — ensure it overlaps NavMesh and has real X/Y size."
             )
             self._log(self._status)
             return
 
         exit_names = [e.name for e in self._exits] or ["(none)"]
-        x0, x1 = spawn_zone.x_range
-        y0, y1 = spawn_zone.y_range
+        u0, u1 = spawn_zone.u_range
+        v0, v1 = spawn_zone.v_range
         self._status = (
-            f"Spawned {len(agents)} idle agents in Spawn "
-            f"X[{x0:.1f},{x1:.1f}] Y[{y0:.1f},{y1:.1f}] → "
+            f"Spawned {len(agents)} idle on Spawn geom={spawn_zone.geom_path} "
+            f"localUV [{u0:.1f},{u1:.1f}]x[{v0:.1f},{v1:.1f}] area={spawn_zone.area:.1f} → "
             f"{assigned_seats[0].name}…{assigned_seats[len(agents) - 1].name}. "
-            f"Exits: {', '.join(exit_names)}. Press Run to walk to seats."
+            f"Exits: {', '.join(exit_names)}. Press Run to seats."
         )
         self._log(self._status)
 
@@ -425,12 +441,53 @@ class Simulation:
         if exit_info is None:
             return
         exit_pos = self._navigation.snap_to_navmesh(exit_info.position) or exit_info.position
-        # Replan if new exit or no path yet
         if agent.goal != exit_info.name or agent.destination is None or not agent.waypoints:
             agent.goal = exit_info.name
             agent.destination = exit_pos
             agent.waypoints = []
             agent.waypoint_index = 0
+
+    def _separate_agents(self) -> None:
+        """Simple pairwise collision: push overlapping capsules apart on the ground plane."""
+        n = len(self._agents)
+        if n < 2:
+            return
+        up = scene_util.up_axis()
+        for i in range(n):
+            for j in range(i + 1, n):
+                a = self._agents[i]
+                b = self._agents[j]
+                pa, pb = a.position, b.position
+                dx = pb[0] - pa[0]
+                dy = pb[1] - pa[1]
+                dz = pb[2] - pa[2]
+                # Horizontal separation only
+                if up == "Y":
+                    dist_sq = dx * dx + dz * dz
+                    dist = math.sqrt(dist_sq) if dist_sq > 1e-12 else 0.0
+                else:
+                    dist_sq = dx * dx + dy * dy
+                    dist = math.sqrt(dist_sq) if dist_sq > 1e-12 else 0.0
+
+                min_dist = a.radius + b.radius
+                if dist >= min_dist:
+                    continue
+
+                if dist < 1e-6:
+                    # Identical positions — nudge on X
+                    push = min_dist * 0.5
+                    a.position = (pa[0] - push, pa[1], pa[2])
+                    b.position = (pb[0] + push, pb[1], pb[2])
+                    continue
+
+                overlap = (min_dist - dist) * 0.5
+                ux, uy, uz = dx / dist, dy / dist, dz / dist
+                if up == "Y":
+                    a.position = (pa[0] - ux * overlap, pa[1], pa[2] - uz * overlap)
+                    b.position = (pb[0] + ux * overlap, pb[1], pb[2] + uz * overlap)
+                else:
+                    a.position = (pa[0] - ux * overlap, pa[1] - uy * overlap, pa[2])
+                    b.position = (pb[0] + ux * overlap, pb[1] + uy * overlap, pb[2])
 
     def _create_capsule(self, stage, prim_path: str, up: str) -> None:
         if stage.GetPrimAtPath(prim_path):
