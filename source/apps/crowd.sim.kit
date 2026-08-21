@@ -21,6 +21,7 @@ template_name = "kit_base_editor"
 "omni.activity.profiler" = {} # For showing RTX loading progress
 "omni.activity.pump" = {} # For showing RTX loading progress
 "omni.anim.curve.core" = {} # Runtime support for animcurves
+"omni.anim.navigation.bundle" = {} # NavMesh create/bake UI and path queries
 "omni.graph.action" = {} # Action graph runtime
 "omni.graph.core" = {} # Omni Graph runtime
 "omni.graph.nodes" = {} # Action graph nodes
@@ -99,6 +100,19 @@ hangDetector.enabled = true
 hangDetector.timeout = 120
 renderer.skipWhileMinimized = true
 window.title = "SimulCrowd"
+
+
+[settings.app.runLoops.main]
+rateLimitEnabled = true
+rateLimitFrequency = 30
+
+[settings.app.runLoops.present]
+rateLimitEnabled = true
+rateLimitFrequency = 30
+
+[settings.app.runLoops.rendering_0]
+rateLimitEnabled = true
+rateLimitFrequency = 30
 
 
 [settings.app.environment]
