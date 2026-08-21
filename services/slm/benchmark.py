@@ -144,7 +144,7 @@ def main() -> None:
         if args.concurrency == 1:
             return
 
-        # Concurrent (hits multiple workers via LB)
+        # Concurrent requests against the same process
         conc: List[float] = []
         errors = 0
 

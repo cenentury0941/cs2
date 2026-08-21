@@ -2,7 +2,7 @@ SimulCrowd — Progress
 =====================
 
 Last updated: 2026-08-22
-Branch: main (synced with origin/main; HEAD @ 62fd548)
+Branch: main
 Primary remote: git@gitlab.presidio.com:rakhulkr/simulcrowd.git (origin)
 Also: https://github.com/cenentury0941/cs.git (github) — historical feature branch pushes
 
@@ -74,6 +74,7 @@ Phase 4 — Fire + perception (DONE)
   - fire_visible / smoke_visible from FOV + range + mesh LOS
   - FOV 210°; view range 20 m; sticky once seen (memory fire_seen)
   - omni.kit.mesh.raycast eye→fire; fail-closed on walls
+  - LOS: skip non-occluders and re-cast; require 2 consecutive clears
 - Debug agent colors: blue → seat, red → exit
 - Status: see fire / evacuating / at exits while fire active
 - Deferred (optional): hesitate / follow nearby / pick different exits;
@@ -93,25 +94,28 @@ Phase 5 — Debug / analytics panel (DONE, main @ 62fd548)
   (no continuous pose spam)
 - Deferred (optional): run stats (time to seats, evac time, exit usage)
 
-Phase 6a — Hosted SLM service (DONE; Mac + fleet/CUDA updates on main)
+Phase 6a — Hosted SLM service (DONE; Mac + CUDA updates on main)
 - Standalone service under services/slm/ (outside Kit)
 - Mac: mlx-community/Phi-4-mini-instruct-4bit via mlx_lm
 - Frozen HTTP API: GET /health, GET /ready, POST /v1/decide (batch)
 - Intents only: GO_TO_SEAT | EXIT | IDLE
 - Per-agent parse/validate; one bad agent never 500s the batch
 - Windows LAN verified against Mac Wi‑Fi (see SLM_LAN_Connection.txt)
-- Worker fleet + round-robin load balancer (default 4 workers)
+- AWS: single CUDA process on :8080 (no LB); Phi-4-mini via transformers
 - CUDA /v1/decide batches agents in one forward; AWS deploy helpers
 
 Phase 6b — Wire Kit to hosted SLM (DONE in extension; verify on LAN/AWS)
 - RemoteSLMDecisionEngine HTTP client in crowd.agents (batch /v1/decide)
-- ~1 Hz Kit-side scheduler (async thread; rules between ticks / on failure)
+- Perception-change-driven decides (not fixed 1 Hz all-agents poll)
+- Batch size slider 1–128; chunked POSTs; USD-persisted SLM settings
+- Soft/hard motion throttle under SLM backlog
 - Tiny perception JSON from sim (exits, smoke, seat known — not raw mesh)
-- Crowd Sim UI: Use hosted SLM + URL + Check Ready
+- Crowd Sim UI: Use hosted SLM + URL + Check Ready + batch size
 - Fallback: RuleBasedDecisionEngine when /ready fails or HTTP errors
 - Laptop (4 GB VRAM) does not host the SLM
 - SLM HTTP request/response append log: context/slm_exchange_log.txt
   (override with SLM_LOG_PATH; gitignored)
+
 
 Repo / tooling notes
 --------------------
@@ -133,7 +137,6 @@ Pending
 
 Phase 6b verification (optional remaining)
 - End-to-end Run with Mac LAN or AWS CUDA worker (Check Ready → Use SLM → Run)
-- Multi-instance workers already server-side; Kit talks to LB :8080 only
 
 Phase 7 — Hackathon deploy + polish
 - Deploy same extension + assets to AWS g6e.xlarge or NVIDIA Brev
