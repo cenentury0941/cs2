@@ -5,7 +5,10 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.0.0
 httpx>=0.27.0
-transformers>=4.46.0
+# Pin <4.54: Phi-4-mini remote modeling imports LossKwargs from transformers.utils,
+# which was removed in 4.54+ / 5.x (breaks load with trust_remote_code).
+# Model card recommends transformers==4.49.0.
+transformers>=4.49.0,<4.54.0
 accelerate>=1.0.0
 sentencepiece>=0.2.0
 protobuf>=4.0.0

@@ -23,13 +23,25 @@ fi
 nvidia-smi -L
 
 echo "==> Python venv: $VENV"
-if [ ! -d "$VENV" ]; then
+if ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
+  echo "python3-venv is missing. On Ubuntu run:" >&2
+  echo "  sudo apt-get update && sudo apt-get install -y python3.12-venv python3-pip" >&2
+  exit 1
+fi
+if [ ! -x "$VENV/bin/python" ]; then
+  rm -rf "$VENV"
   python3 -m venv "$VENV"
 fi
 # shellcheck disable=SC1091
 . "$VENV/bin/activate"
 python -m pip install --upgrade pip
+# Drop stale remote modeling_* caches that break after transformers upgrades.
+rm -rf "${HOME}/.cache/huggingface/modules/transformers_modules/microsoft" \
+  "/home/ubuntu/.cache/huggingface/modules/transformers_modules/microsoft" 2>/dev/null || true
 python -m pip install -r requirements-cuda.txt
+# Ensure transformers is in the Phi-4-compatible window even if an older
+# unconstrained install left 5.x in the venv.
+python -m pip install 'transformers>=4.49.0,<4.54.0'
 
 echo "==> Starting SLM on ${HOST}:${PORT} (model=${MODEL})"
 echo "    Local smoke:  curl -s http://127.0.0.1:${PORT}/health"

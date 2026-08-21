@@ -47,13 +47,30 @@ class CudaWorker:
             torch.cuda.get_device_name(0),
         )
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        self._tokenizer = AutoTokenizer.from_pretrained(self.model_id, trust_remote_code=True)
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id,
-            torch_dtype=dtype,
-            device_map="auto",
-            trust_remote_code=True,
-        )
+        # Prefer native transformers weights (Phi-4 since ~4.49). Fall back to
+        # remote code only if needed; remote modeling_phi3 breaks on transformers>=4.54.
+        self._tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+        try:
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self.model_id,
+                torch_dtype=dtype,
+                device_map="auto",
+                trust_remote_code=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Native load failed (%s); retrying with trust_remote_code=True",
+                exc,
+            )
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                self.model_id, trust_remote_code=True
+            )
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self.model_id,
+                torch_dtype=dtype,
+                device_map="auto",
+                trust_remote_code=True,
+            )
         self._model.eval()
         self._device = next(self._model.parameters()).device
         self._ready = True
