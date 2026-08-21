@@ -1,8 +1,8 @@
 SimulCrowd — Progress
 =====================
 
-Last updated: 2026-08-21
-Branch: main (ahead of origin/main; HEAD @ cbdf9ef)
+Last updated: 2026-08-22
+Branch: main (synced with origin/main; HEAD @ 62fd548)
 Primary remote: git@gitlab.presidio.com:rakhulkr/simulcrowd.git (origin)
 Also: https://github.com/cenentury0941/cs.git (github) — historical feature branch pushes
 
@@ -28,7 +28,8 @@ Phase 1 — Extension scaffold
 - Custom extension crowd.agents created and enabled in crowd.sim.kit
 - Modules in place:
   extension.py, ui.py, simulation.py, agent.py,
-  navigation.py, fire.py, ai.py, scene.py, layout.py
+  navigation.py, fire.py, ai.py, scene.py, layout.py,
+  inspect.py, viz.py
 - Crowd Agents control panel (Open Venue, smoke-test cube, sim buttons)
 - USD smoke test: Spawn Cube / Move Cube +1m
 - DecisionEngine interface with RuleBasedDecisionEngine stub
@@ -66,7 +67,7 @@ Phase 3b — Crowd pathing polish (DONE, on main)
 - Convert Nav_XXX / Nav.XXX markers → NavMesh Include Volumes under
   /World/NavVolumes (pose/size from mesh local bbox × transform)
 
-Phase 4 — Fire + perception (DONE, main @ cbdf9ef)
+Phase 4 — Fire + perception (DONE)
 - Start Fire / Cancel: viewport hover preview cuboid, click-to-place
 - Red agent-sized cuboid at pick (no VFX / Flow — deferred)
 - Perception-driven EXIT (not global force-evacuate):
@@ -78,21 +79,29 @@ Phase 4 — Fire + perception (DONE, main @ cbdf9ef)
 - Deferred (optional): hesitate / follow nearby / pick different exits;
   smoke volume VFX polish → Phase 7
 
-Phase 6a — Hosted SLM service on Mac (DONE)
-- Standalone service under services/slm/ (outside Kit; Apple Silicon mlx_lm)
-- Model: mlx-community/Phi-4-mini-instruct-4bit (auto-download on first run)
-- One in-process worker for now (no multi-instance / load balance yet)
-- Frozen HTTP API:
-  - GET /health — process up
-  - GET /ready — 200 only after model loaded
-  - POST /v1/decide — batched agents → decisions
+Phase 5 — Debug / analytics panel (DONE, main @ 62fd548)
+- Individual Agent Info: live fields for click-inspected agent
+  (id, intent, goal, seat, exit, fire/smoke, destination, waypoints)
+- Viewport click/hover inspect (not lasting USD selection):
+  - capsules set_pickable(False); Stage picks cleared
+  - camera-ray vs capsule pick (frontmost under cursor)
+  - click empty space deselects
+- Highlights: selected = green; hovered = light green
+- Selected agent FOV wireframe (210° / 20 m at eye height)
+- State-change log (persist for whole run; clear on Spawn/Reset):
+  intent, goal, seat, saw fire, arrived, fire placed, run/pause
+  (no continuous pose spam)
+- Deferred (optional): run stats (time to seats, evac time, exit usage)
+
+Phase 6a — Hosted SLM service (DONE; Mac + fleet/CUDA updates on main)
+- Standalone service under services/slm/ (outside Kit)
+- Mac: mlx-community/Phi-4-mini-instruct-4bit via mlx_lm
+- Frozen HTTP API: GET /health, GET /ready, POST /v1/decide (batch)
 - Intents only: GO_TO_SEAT | EXIT | IDLE
-- System prompt: SimulCrowd decision-engine style; JSON intent + destination
-- Per-agent parse/validate; invalid output falls back (e.g. fire → EXIT);
-  one bad agent never 500s the batch
-- run.py entrypoint (127.0.0.1:8080); smoke_test.py + curl verified
-- README notes Mac mlx_lm now; AWS/Ubuntu will swap worker behind same API
+- Per-agent parse/validate; one bad agent never 500s the batch
 - Windows LAN verified against Mac Wi‑Fi (see SLM_LAN_Connection.txt)
+- Worker fleet + round-robin load balancer (default 4 workers)
+- CUDA /v1/decide batches agents in one forward; AWS deploy helpers
 
 
 Repo / tooling notes
@@ -113,28 +122,19 @@ Repo / tooling notes
 Pending
 -------
 
-Phase 5 — Debug / analytics panel (IN PROGRESS)
-- Individual Agent Info: live fields for click-inspected agent
-  (id, intent, goal, seat, exit, fire/smoke perceived, destination, waypoints)
-- Viewport click inspects an agent for the panel (not USD selection)
-- Agent capsules set_pickable(False); Stage selection of agents is cleared
-- Selected = green; hovered = light green; selected shows FOV wireframe
-- Pick fix: ray vs capsule (frontmost under cursor), not floor-hit nearest
-- State-change log on Agent Info (intent/goal/fire/arrival — not pose spam)
-- Still pending: run stats (seat/evac times, exit usage)
-
 Phase 6b — Wire Kit to hosted SLM + scale
 - RemoteSLMDecisionEngine HTTP client in crowd.agents (batch /v1/decide)
 - Keep DecisionEngine.decide(agent) → intent; ~1 Hz scheduler on Kit side
 - Tiny perception JSON from sim (exits, smoke, seat known — not raw mesh)
-- Multi-instance workers + load distribution
-- AWS/Ubuntu CUDA worker (e.g. vLLM) behind the same HTTP contract
+- Multi-instance workers + load distribution (server-side largely done in 6a)
+- AWS/Ubuntu CUDA worker behind the same HTTP contract (deploy helpers exist)
 - Laptop (4 GB VRAM) must not host the SLM
 
 Phase 7 — Hackathon deploy + polish
 - Deploy same extension + assets to AWS g6e.xlarge or NVIDIA Brev
 - Camera / lighting / fire VFX polish (replace cuboid if desired)
 - Optional Phase 4 variety: hesitate, follow, different exits
+- Optional Phase 5 run stats (seat/evac times, exit usage)
 - Fallback demo video
 - Pitch: independent per-agent reasoning; scale via scheduler + batch SLM
 
@@ -145,5 +145,5 @@ Also still useful (asset / authoring)
 
 Suggested next action
 ---------------------
-Verify Agent Info state-change log (saw fire / goal / intent / arrived).
-Optional: run stats, or start Phase 6b.
+Phase 6b: RemoteSLMDecisionEngine in crowd.agents — batch POST /v1/decide
+over LAN (context/SLM_LAN_Connection.txt) or AWS; ~1 Hz Kit-side scheduler.
