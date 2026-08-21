@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 import omni.ui as ui
 
@@ -14,6 +14,20 @@ if TYPE_CHECKING:
 
 WINDOW_TITLE = "Crowd Sim"
 AGENT_INFO_TITLE = "Individual Agent Info"
+
+_AGENT_INFO_FIELDS = (
+    ("id", "ID"),
+    ("intent", "Intent"),
+    ("goal", "Goal"),
+    ("assigned_seat", "Assigned seat"),
+    ("exit_chosen", "Exit chosen"),
+    ("fire_perceived", "Fire perceived"),
+    ("smoke_perceived", "Smoke perceived"),
+    ("at_destination", "At destination"),
+    ("position", "Position (feet)"),
+    ("destination", "Destination"),
+    ("waypoints_left", "Waypoints left"),
+)
 
 
 class CrowdAgentsWindow:
@@ -84,7 +98,7 @@ class CrowdAgentsWindow:
                 ui.Label(
                     "Start Fire → hover preview → click to place. "
                     "Agents evacuate only when fire is in FOV+range with clear LOS "
-                    "(blue=seat, red=exit).",
+                    "(blue=seat, red=exit). Click an agent for Individual Agent Info.",
                     height=0,
                     word_wrap=True,
                     style={"color": 0xFFAAAAAA, "font_size": 12},
@@ -176,22 +190,103 @@ class CrowdAgentsWindow:
 
 
 class AgentInfoWindow:
-    """Placeholder panel for per-agent inspection (Phase 5)."""
+    """Per-agent inspection panel driven by custom click-select (Phase 5)."""
 
-    def __init__(self) -> None:
+    def __init__(self, simulation: "Simulation") -> None:
+        self._simulation = simulation
+        self._hint_label: Optional[ui.Label] = None
+        self._value_labels: Dict[str, ui.Label] = {}
+        self._log_label: Optional[ui.Label] = None
         self._window = ui.Window(AGENT_INFO_TITLE, width=320, height=600)
+        self._build()
+        self.refresh()
+
+    def _build(self) -> None:
         with self._window.frame:
-            with ui.VStack(spacing=8, height=0):
-                ui.Label("Individual Agent Info", height=0, style={"font_size": 16})
-                ui.Spacer(height=8)
-                ui.Label(
-                    "Select an agent to inspect intent, goal, perception, and path.",
-                    height=0,
-                    word_wrap=True,
-                    style={"color": 0xFFAAAAAA},
+            with ui.ScrollingFrame(
+                horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF,
+                vertical_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_AS_NEEDED,
+            ):
+                with ui.VStack(spacing=6, height=0):
+                    ui.Label("Individual Agent Info", height=0, style={"font_size": 16})
+                    ui.Spacer(height=4)
+                    self._hint_label = ui.Label(
+                        "Click an agent in the viewport to inspect.",
+                        height=0,
+                        word_wrap=True,
+                        style={"color": 0xFFAAAAAA, "font_size": 12},
+                    )
+                    ui.Spacer(height=8)
+                    for key, title in _AGENT_INFO_FIELDS:
+                        with ui.HStack(height=0, spacing=6):
+                            ui.Label(
+                                title,
+                                width=120,
+                                height=0,
+                                style={"color": 0xFFAAAAAA, "font_size": 12},
+                            )
+                            self._value_labels[key] = ui.Label(
+                                "—",
+                                height=0,
+                                word_wrap=True,
+                                style={"color": 0xFFEEEEEE, "font_size": 13},
+                            )
+                    ui.Spacer(height=10)
+                    ui.Label("State changes", height=0, style={"font_size": 14})
+                    ui.Label(
+                        "Discrete events for this run (intent, goal, fire, arrival) — "
+                        "newest first; cleared on Spawn/Reset.",
+                        height=0,
+                        word_wrap=True,
+                        style={"color": 0xFF888888, "font_size": 11},
+                    )
+                    self._log_label = ui.Label(
+                        "(no events yet)",
+                        height=0,
+                        word_wrap=True,
+                        style={"color": 0xFFCCCCCC, "font_size": 12},
+                    )
+
+    def refresh(self) -> None:
+        snap = self._simulation.selected_agent_snapshot()
+        if snap is None:
+            if self._hint_label:
+                self._hint_label.text = (
+                    "Click an agent in the viewport to inspect."
+                    if self._simulation.has_agents
+                    else "Spawn agents, then click one to inspect."
                 )
-                ui.Spacer(height=12)
-                ui.Label("(Placeholder — coming in Phase 5)", height=0, style={"color": 0xFF888888})
+            for label in self._value_labels.values():
+                label.text = "—"
+            self._refresh_log(agent_id=None)
+            return
+
+        if self._hint_label:
+            self._hint_label.text = f"Inspecting {snap['id']} (not USD-selected)."
+        for key, _title in _AGENT_INFO_FIELDS:
+            label = self._value_labels.get(key)
+            if label is not None:
+                label.text = snap.get(key, "—")
+        self._refresh_log(agent_id=snap["id"])
+
+    def _refresh_log(self, agent_id: Optional[str]) -> None:
+        if not self._log_label:
+            return
+        if agent_id:
+            lines = self._simulation.state_event_lines_for_agent_or_sim(agent_id)
+        else:
+            # Full run history when nothing is selected
+            lines = self._simulation.state_event_lines()
+        if not lines:
+            text = "(no events yet — run the sim / place fire)"
+        else:
+            text = "\n".join(lines)
+        # Avoid rewriting identical text every frame (causes flicker / scroll jump)
+        if self._log_label.text != text:
+            self._log_label.text = text
 
     def destroy(self) -> None:
         self._window = None
+        self._hint_label = None
+        self._value_labels.clear()
+        self._log_label = None

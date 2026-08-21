@@ -108,7 +108,11 @@ class Agent:
     def center_position(self) -> Vec3:
         return _lift(self.position, self.height * 0.5)
 
-    def sync_to_usd(self) -> None:
+    def sync_to_usd(self, *, highlight: Optional[str] = None) -> None:
+        """Write feet→center transform and debug color.
+
+        ``highlight``: ``\"selected\"`` | ``\"hovered\"`` | ``None``.
+        """
         stage = omni.usd.get_context().get_stage()
         if stage is None:
             return
@@ -128,14 +132,17 @@ class Agent:
             translate_op = xformable.AddTranslateOp()
 
         translate_op.Set(Gf.Vec3d(*self.center_position()))
-        self._sync_debug_color(prim)
+        self._sync_debug_color(prim, highlight=highlight)
 
-    def _sync_debug_color(self, prim) -> None:
-        """Blue → seat / default; red → evacuating to an exit."""
-        if (self.goal or "").startswith("Exit"):
-            color = Gf.Vec3f(0.92, 0.12, 0.08)
-        else:
-            color = Gf.Vec3f(0.15, 0.45, 0.95)
+    def _sync_debug_color(self, prim, *, highlight: Optional[str] = None) -> None:
+        from .viz import agent_highlight_color
+
+        evacuating = (self.goal or "").startswith("Exit")
+        color = agent_highlight_color(
+            selected=(highlight == "selected"),
+            hovered=(highlight == "hovered"),
+            evacuating=evacuating,
+        )
         gprim = UsdGeom.Gprim(prim)
         attr = gprim.GetDisplayColorAttr()
         if not attr:

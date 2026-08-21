@@ -265,7 +265,7 @@ class FireSystem:
 
         # Ignore agents + fire so they never count as the first hit
         try:
-            disallow = [FIRE_PATH, FIRE_PREVIEW_PATH]
+            disallow = [FIRE_PATH, FIRE_PREVIEW_PATH, "/World/CrowdAgents/AgentFovViz"]
             stage = omni.usd.get_context().get_stage()
             if stage is not None:
                 root = stage.GetPrimAtPath("/World/CrowdAgents")
@@ -552,6 +552,8 @@ def _path_blocks_los(path: str) -> bool:
     if p == FIRE_PREVIEW_PATH or p.startswith(FIRE_PREVIEW_PATH):
         return False
     if "/CrowdAgents/Agent_" in p or p.startswith("/World/CrowdAgents/Agent_"):
+        return False
+    if "/CrowdAgents/AgentFovViz" in p or p.endswith("/AgentFovViz"):
         return False
     if "navmesh" in lower or "/navvolumes" in lower or "navmeshvolume" in lower:
         return False

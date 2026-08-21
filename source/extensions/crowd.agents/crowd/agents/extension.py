@@ -25,7 +25,7 @@ class CrowdAgentsExtension(omni.ext.IExt):
 
         self._simulation = Simulation()
         self._window = CrowdAgentsWindow(self._simulation)
-        self._agent_info_window = AgentInfoWindow()
+        self._agent_info_window = AgentInfoWindow(self._simulation)
         self._layout_task = schedule_startup_layout()
         self._update_sub = (
             omni.kit.app.get_app()
@@ -37,6 +37,8 @@ class CrowdAgentsExtension(omni.ext.IExt):
         dt = self._read_dt(event)
         self._simulation.update(dt)
         self._window.refresh_status()
+        if self._agent_info_window:
+            self._agent_info_window.refresh()
 
     @staticmethod
     def _read_dt(event) -> float:

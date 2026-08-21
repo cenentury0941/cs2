@@ -113,10 +113,15 @@ Repo / tooling notes
 Pending
 -------
 
-Phase 5 — Debug / analytics panel
-- Per-agent: id, intent, goal, fire perceived, exit chosen
-- Run stats: time to seats, evacuation time, exit usage
-- Decision log (last N events)
+Phase 5 — Debug / analytics panel (IN PROGRESS)
+- Individual Agent Info: live fields for click-inspected agent
+  (id, intent, goal, seat, exit, fire/smoke perceived, destination, waypoints)
+- Viewport click inspects an agent for the panel (not USD selection)
+- Agent capsules set_pickable(False); Stage selection of agents is cleared
+- Selected = green; hovered = light green; selected shows FOV wireframe
+- Pick fix: ray vs capsule (frontmost under cursor), not floor-hit nearest
+- State-change log on Agent Info (intent/goal/fire/arrival — not pose spam)
+- Still pending: run stats (seat/evac times, exit usage)
 
 Phase 6b — Wire Kit to hosted SLM + scale
 - RemoteSLMDecisionEngine HTTP client in crowd.agents (batch /v1/decide)
@@ -140,6 +145,5 @@ Also still useful (asset / authoring)
 
 Suggested next action
 ---------------------
-Phase 4 core demo is good enough (place fire → LOS/FOV evacuate).
-Omniverse track: Phase 5 debug/analytics panel, or Phase 6b
-RemoteSLMDecisionEngine client + LAN via context/SLM_LAN_Connection.txt.
+Verify Agent Info state-change log (saw fire / goal / intent / arrived).
+Optional: run stats, or start Phase 6b.

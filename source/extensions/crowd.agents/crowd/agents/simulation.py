@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import carb
 import omni.usd
@@ -16,8 +16,10 @@ from pxr import Gf, UsdGeom
 from .agent import Agent
 from .ai import DecisionEngine, RuleBasedDecisionEngine
 from .fire import FIRE_FOV_DEG, FIRE_VIEW_RANGE_M, FireSystem
+from .inspect import AgentInspectPicker, pick_frontmost_along_ray
 from .navigation import NavigationSystem
 from . import scene as scene_util
+from .viz import clear_fov_wireframe, sync_fov_wireframe
 
 TEST_CUBE_PATH = "/World/CrowdAgents/TestCube"
 AGENTS_ROOT = "/World/CrowdAgents"
@@ -26,7 +28,20 @@ MAX_AGENTS = 100
 MIN_AGENTS = 1
 AGENT_HEIGHT = 1.7
 AGENT_RADIUS = 0.35
+# Soft safety cap only — events persist for the whole run until spawn/reset.
+MAX_STATE_EVENTS = 10000
 Vec3 = Tuple[float, float, float]
+
+
+def _is_agent_prim_path(path: str) -> bool:
+    """True for /World/CrowdAgents/Agent_XXX (and descendants)."""
+    p = (path or "").replace("\\", "/")
+    prefix = f"{AGENTS_ROOT}/Agent_"
+    if not p.startswith(prefix):
+        return False
+    rest = p[len(AGENTS_ROOT) + 1 :]  # Agent_001[/…]
+    name = rest.split("/", 1)[0]
+    return name.startswith("Agent_")
 
 
 class Simulation:
@@ -44,20 +59,269 @@ class Simulation:
         self._log_lines: List[str] = []
         self._exits = []
         self._rng = random.Random(7)
+        self._selected_agent_id: Optional[str] = None
+        self._hovered_agent_id: Optional[str] = None
+        self._suppress_selection_event = False
+        self._inspect_picker = AgentInspectPicker(self)
+        self._sim_time = 0.0
+        self._state_events: List[Dict[str, str]] = []
+        self._agent_watch: Dict[str, Dict[str, object]] = {}
+        self._stage_event_sub = (
+            omni.usd.get_context()
+            .get_stage_event_stream()
+            .create_subscription_to_pop(
+                self._on_stage_event, name="crowd.agents.agent_inspect"
+            )
+        )
 
     @property
     def status_text(self) -> str:
         return self._status
 
+    @property
+    def selected_agent_id(self) -> Optional[str]:
+        return self._selected_agent_id
+
+    def get_selected_agent(self) -> Optional[Agent]:
+        if not self._selected_agent_id:
+            return None
+        for agent in self._agents:
+            if agent.agent_id == self._selected_agent_id:
+                return agent
+        return None
+
+    def selected_agent_snapshot(self) -> Optional[Dict[str, str]]:
+        """Flat string fields for the Individual Agent Info panel."""
+        agent = self.get_selected_agent()
+        if agent is None:
+            return None
+        goal = agent.goal or "—"
+        exit_chosen = goal if goal.startswith("Exit") else "—"
+        fire_seen = bool(agent.memory.get("fire_seen") or agent.perception.get("fire_visible"))
+        pos = agent.position
+        dest = agent.destination
+        remaining_wp = max(0, len(agent.waypoints) - agent.waypoint_index)
+        return {
+            "id": agent.agent_id,
+            "intent": agent.intent or "—",
+            "goal": goal,
+            "assigned_seat": agent.assigned_seat or "—",
+            "exit_chosen": exit_chosen,
+            "fire_perceived": "yes" if fire_seen else "no",
+            "smoke_perceived": (
+                "yes" if agent.perception.get("smoke_visible") else "no"
+            ),
+            "at_destination": (
+                "yes" if agent.perception.get("at_destination") else "no"
+            ),
+            "position": f"({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})",
+            "destination": (
+                f"({dest[0]:.2f}, {dest[1]:.2f}, {dest[2]:.2f})"
+                if dest is not None
+                else "—"
+            ),
+            "waypoints_left": str(remaining_wp),
+        }
+
+    def state_event_lines(
+        self, *, agent_id: Optional[str] = None, limit: Optional[int] = None
+    ) -> List[str]:
+        """Newest-first discrete state-change lines for the current run.
+
+        Cleared only on spawn / reset / new venue — not trimmed during a run
+        (aside from a large soft safety cap).
+        """
+        events = self._state_events
+        if agent_id:
+            events = [e for e in events if e.get("agent_id") == agent_id]
+        lines = [e["line"] for e in reversed(events)]
+        if limit is not None and limit > 0:
+            return lines[:limit]
+        return lines
+
+    def state_event_lines_for_agent_or_sim(
+        self, agent_id: str, *, limit: Optional[int] = None
+    ) -> List[str]:
+        """Newest-first events for one agent plus sim-level (fire/run/pause)."""
+        events = [
+            e
+            for e in self._state_events
+            if e.get("agent_id") in (agent_id, "sim")
+        ]
+        lines = [e["line"] for e in reversed(events)]
+        if limit is not None and limit > 0:
+            return lines[:limit]
+        return lines
+
+    @property
+    def has_agents(self) -> bool:
+        return bool(self._agents)
+
+    def select_agent(self, agent_id: Optional[str]) -> None:
+        """Set inspected agent for the info panel (not USD selection)."""
+        if agent_id is None:
+            self._selected_agent_id = None
+            self.refresh_visuals()
+            return
+        if any(a.agent_id == agent_id for a in self._agents):
+            self._selected_agent_id = agent_id
+            self._clear_agent_usd_selection()
+            self.refresh_visuals()
+
+    def set_hovered_agent(self, agent_id: Optional[str]) -> None:
+        if agent_id == self._hovered_agent_id:
+            return
+        if agent_id is not None and not any(a.agent_id == agent_id for a in self._agents):
+            agent_id = None
+        self._hovered_agent_id = agent_id
+        self.refresh_visuals()
+
+    def pick_frontmost_agent(
+        self, origin: Vec3, direction: Vec3
+    ) -> Optional[Agent]:
+        """Frontmost agent capsule along a camera ray (correct depth order)."""
+        return pick_frontmost_along_ray(
+            self._agents, origin, direction, up=scene_util.up_axis()
+        )
+
+    def refresh_visuals(self) -> None:
+        """Apply highlight colors + selected FOV wireframe (works while paused)."""
+        selected = self._selected_agent_id
+        hovered = self._hovered_agent_id
+        for agent in self._agents:
+            if agent.agent_id == selected:
+                highlight = "selected"
+            elif agent.agent_id == hovered:
+                highlight = "hovered"
+            else:
+                highlight = None
+            agent.sync_to_usd(highlight=highlight)
+
+        sel = self.get_selected_agent()
+        if sel is None:
+            clear_fov_wireframe()
+        else:
+            sync_fov_wireframe(
+                sel.position,
+                sel.facing,
+                up=scene_util.up_axis(),
+                height=sel.height,
+            )
+
     def shutdown(self) -> None:
+        self._stage_event_sub = None
+        if self._inspect_picker:
+            self._inspect_picker.destroy()
+            self._inspect_picker = None
+        clear_fov_wireframe()
         self._fire.reset()
         self._agents.clear()
+        self._selected_agent_id = None
+        self._hovered_agent_id = None
+        self._agent_watch.clear()
+        self._state_events.clear()
+        self._sim_time = 0.0
         self._running = False
 
+    def _on_stage_event(self, event) -> None:
+        try:
+            if event.type != int(omni.usd.StageEventType.SELECTION_CHANGED):
+                return
+        except Exception:  # noqa: BLE001
+            return
+        if self._suppress_selection_event:
+            return
+        self._adopt_agent_clicks_from_usd_selection()
+
+    def _adopt_agent_clicks_from_usd_selection(self) -> None:
+        """Clicking an agent inspects it in the panel; clear traditional selection."""
+        selection = omni.usd.get_context().get_selection()
+        try:
+            paths = list(selection.get_selected_prim_paths() or [])
+        except Exception:  # noqa: BLE001
+            return
+        if not paths:
+            return
+
+        chosen: Optional[Agent] = None
+        agent_paths = []
+        other_paths = []
+        for path in paths:
+            if not _is_agent_prim_path(path):
+                other_paths.append(path)
+                continue
+            agent_paths.append(path)
+            if chosen is None:
+                chosen = self._find_agent_by_prim_path(path)
+
+        if not agent_paths:
+            return
+
+        if chosen is not None:
+            self._selected_agent_id = chosen.agent_id
+
+        self._clear_agent_usd_selection(keep_other_paths=other_paths)
+        self.refresh_visuals()
+
+    def _clear_agent_usd_selection(
+        self, keep_other_paths: Optional[List[str]] = None
+    ) -> None:
+        """Drop agent prims from USD selection so Stage/Property never keep them."""
+        ctx = omni.usd.get_context()
+        selection = ctx.get_selection()
+        self._suppress_selection_event = True
+        try:
+            if keep_other_paths is not None:
+                if keep_other_paths:
+                    selection.set_selected_prim_paths(keep_other_paths)
+                else:
+                    selection.clear_selected_prim_paths()
+                return
+            paths = list(selection.get_selected_prim_paths() or [])
+            remaining = [p for p in paths if not _is_agent_prim_path(p)]
+            if len(remaining) == len(paths):
+                return
+            if remaining:
+                selection.set_selected_prim_paths(remaining)
+            else:
+                selection.clear_selected_prim_paths()
+        except Exception:  # noqa: BLE001
+            try:
+                selection.clear_selected_prim_paths()
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            self._suppress_selection_event = False
+
+    def _find_agent_by_prim_path(self, path: str) -> Optional[Agent]:
+        p = (path or "").replace("\\", "/")
+        for agent in self._agents:
+            ap = agent.prim_path.replace("\\", "/")
+            if p == ap or p.startswith(ap + "/"):
+                return agent
+        parts = p.split("/")
+        for part in parts:
+            if part.startswith("Agent_"):
+                for agent in self._agents:
+                    if agent.agent_id == part:
+                        return agent
+        return None
+
+    def _set_agents_pickable(self, pickable: bool) -> None:
+        ctx = omni.usd.get_context()
+        for agent in self._agents:
+            try:
+                ctx.set_pickable(agent.prim_path, pickable)
+            except Exception:  # noqa: BLE001
+                pass
+
     def update(self, dt: float) -> None:
+        if self._inspect_picker:
+            self._inspect_picker.ensure_attached()
         if not self._running or dt <= 0.0:
             return
 
+        self._sim_time += dt
         fire_active = self._fire.is_active
         seated = 0
         evacuating = 0
@@ -72,7 +336,8 @@ class Simulation:
             if visible:
                 saw_fire += 1
 
-            intent = self._brain.decide(agent)
+            brain_intent = self._brain.decide(agent)
+            intent = brain_intent
 
             if intent == "EXIT":
                 # Leave seat / prior arrival so path following can start
@@ -96,13 +361,14 @@ class Simulation:
 
             agent.intent = intent
             self._navigation.apply_intent(agent, intent, dt)
+            self._track_agent_state_changes(agent, brain_intent)
 
         # Only moving agents collide; seated agents are ignored by others
         self._separate_walking_agents(up)
 
-        for agent in self._agents:
-            agent.sync_to_usd()
+        self.refresh_visuals()
 
+        for agent in self._agents:
             if agent.perception.get("at_destination"):
                 if (agent.goal or "").startswith("Exit"):
                     evacuating += 1
@@ -140,13 +406,15 @@ class Simulation:
                     # Prompted walk: Spawn → assigned Seat_XXX
                     agent.perception["at_destination"] = False
                     self._navigation.set_destination(agent, agent.destination)
-                agent.sync_to_usd()
+            self.refresh_visuals()
             self._running = True
+            self._note_state_change("sim", "run")
             self._status = f"Running — {len(self._agents)} agents walking Spawn → seats"
             self._log(self._status)
             return
 
         self._running = False
+        self._note_state_change("sim", "paused")
         self._status = "Paused"
         self._log(self._status)
 
@@ -159,7 +427,9 @@ class Simulation:
             agent.waypoint_index = 0
             agent.intent = "IDLE"
             agent.perception["at_destination"] = False
-            agent.sync_to_usd()
+            self._seed_agent_watch(agent, "IDLE")
+            self._note_state_change(agent.agent_id, "reset")
+        self.refresh_visuals()
         self._status = (
             f"Reset — {len(self._agents)} agents back at Spawn (idle). Press Run to seats."
         )
@@ -188,6 +458,12 @@ class Simulation:
             ok = omni.usd.get_context().open_stage(path)
             if ok:
                 self._agents.clear()
+                self._selected_agent_id = None
+                self._hovered_agent_id = None
+                self._agent_watch.clear()
+                self._state_events.clear()
+                self._sim_time = 0.0
+                clear_fov_wireframe()
                 self._status = f"Opened: {filename}"
                 self._log(self._status)
             else:
@@ -382,10 +658,15 @@ class Simulation:
             agent.waypoint_index = 0
             agent.intent = "IDLE"
             agent.face_toward(seat_pos, up)
-            agent.sync_to_usd()
             agents.append(agent)
 
         self._agents = agents
+        self._selected_agent_id = None
+        self._hovered_agent_id = None
+        self._agent_watch.clear()
+        self._state_events.clear()
+        self._sim_time = 0.0
+        clear_fov_wireframe()
         if not agents:
             self._status = (
                 "Failed to spawn on Spawn plane — ensure it overlaps NavMesh and has real X/Y size."
@@ -393,15 +674,23 @@ class Simulation:
             self._log(self._status)
             return
 
+        for agent in agents:
+            self._seed_agent_watch(agent, "IDLE")
+            seat = agent.assigned_seat or "—"
+            self._note_state_change(agent.agent_id, "spawned", f"seat {seat}")
+
+        self._set_agents_pickable(False)
+        if self._inspect_picker:
+            self._inspect_picker.ensure_attached()
+        self.refresh_visuals()
+
         exit_names = [e.name for e in self._exits] or ["(none)"]
         seat_names = [s.name for s in assigned_seats[: len(agents)]]
-        u0, u1 = spawn_zone.u_range
-        v0, v1 = spawn_zone.v_range
         self._status = (
             f"Spawned {len(agents)} idle on Spawn (area={spawn_zone.area:.1f}) → "
             f"random seats {seat_names[0]}…{seat_names[-1]} "
             f"({len(seat_names)} of {len(seats)} available). "
-            f"Exits: {', '.join(exit_names)}. Press Run to seats."
+            f"Exits: {', '.join(exit_names)}. Click an agent for Individual Agent Info."
         )
         self._log(self._status)
 
@@ -420,8 +709,8 @@ class Simulation:
                 agent.goal = "random"
                 agent.assigned_seat = None
                 planned += 1
-                agent.sync_to_usd()
 
+        self.refresh_visuals()
         self._status = f"Random destinations set for {planned}/{len(self._agents)} agents."
         self._log(self._status)
 
@@ -449,7 +738,8 @@ class Simulation:
             agent.waypoint_index = 0
             agent.intent = "IDLE"
             agent.face_toward(seat_pos)
-            agent.sync_to_usd()
+            self._track_agent_state_changes(agent, "IDLE")
+        self.refresh_visuals()
 
         names = [s.name for s in assigned]
         self._status = (
@@ -501,6 +791,11 @@ class Simulation:
         self._fire.trigger_at(position)
         self._exits = scene_util.find_exits()
         exits = [e.name for e in self._exits] or ["(none found)"]
+        self._note_state_change(
+            "sim",
+            "fire placed",
+            f"({position[0]:.1f}, {position[1]:.1f}, {position[2]:.1f})",
+        )
         self._status = (
             f"Fire at ({position[0]:.1f}, {position[1]:.1f}, {position[2]:.1f}) — "
             f"agents evacuate when they see it "
@@ -590,11 +885,16 @@ class Simulation:
             to_remove = []
             for child in root.GetChildren():
                 name = child.GetName()
-                if name.startswith("Agent_") or name == "TestCube":
+                if name.startswith("Agent_") or name in ("TestCube", "AgentFovViz"):
                     to_remove.append(child.GetPath())
             for path in to_remove:
                 stage.RemovePrim(path)
         self._agents.clear()
+        self._selected_agent_id = None
+        self._hovered_agent_id = None
+        self._agent_watch.clear()
+        self._state_events.clear()
+        self._sim_time = 0.0
 
     def _lift_point(self, floor_point: Vec3, amount: float) -> Vec3:
         up = scene_util.up_axis()
@@ -612,3 +912,64 @@ class Simulation:
         self._log_lines.append(message)
         if len(self._log_lines) > 50:
             self._log_lines = self._log_lines[-50:]
+
+    def _note_state_change(
+        self, agent_id: str, kind: str, detail: str = ""
+    ) -> None:
+        """Record a discrete state change (not continuous pose updates)."""
+        detail = (detail or "").strip()
+        if detail:
+            line = f"t={self._sim_time:.1f}s  {agent_id}: {kind} — {detail}"
+        else:
+            line = f"t={self._sim_time:.1f}s  {agent_id}: {kind}"
+        self._state_events.append(
+            {"agent_id": agent_id, "kind": kind, "detail": detail, "line": line}
+        )
+        if len(self._state_events) > MAX_STATE_EVENTS:
+            self._state_events = self._state_events[-MAX_STATE_EVENTS:]
+
+    def _snapshot_agent_watch(self, agent: Agent, brain_intent: str) -> Dict[str, object]:
+        return {
+            "brain": brain_intent,
+            "goal": agent.goal or "",
+            "seat": agent.assigned_seat or "",
+            "fire": bool(
+                agent.memory.get("fire_seen") or agent.perception.get("fire_visible")
+            ),
+            "arrived": bool(agent.perception.get("at_destination")),
+        }
+
+    def _seed_agent_watch(self, agent: Agent, brain_intent: str = "IDLE") -> None:
+        self._agent_watch[agent.agent_id] = self._snapshot_agent_watch(
+            agent, brain_intent
+        )
+
+    def _track_agent_state_changes(self, agent: Agent, brain_intent: str) -> None:
+        cur = self._snapshot_agent_watch(agent, brain_intent)
+        prev = self._agent_watch.get(agent.agent_id)
+        if prev is None:
+            self._agent_watch[agent.agent_id] = cur
+            return
+
+        aid = agent.agent_id
+        if cur["fire"] and not prev["fire"]:
+            self._note_state_change(aid, "saw fire")
+        if cur["goal"] != prev["goal"]:
+            old_g = prev["goal"] or "—"
+            new_g = cur["goal"] or "—"
+            self._note_state_change(aid, "goal", f"{old_g} → {new_g}")
+        if cur["seat"] != prev["seat"]:
+            old_s = prev["seat"] or "—"
+            new_s = cur["seat"] or "—"
+            self._note_state_change(aid, "seat", f"{old_s} → {new_s}")
+        if cur["brain"] != prev["brain"]:
+            self._note_state_change(
+                aid, "intent", f"{prev['brain']} → {cur['brain']}"
+            )
+        if cur["arrived"] and not prev["arrived"]:
+            where = cur["goal"] or "destination"
+            self._note_state_change(aid, "arrived", str(where))
+        elif prev["arrived"] and not cur["arrived"]:
+            self._note_state_change(aid, "left destination")
+
+        self._agent_watch[agent.agent_id] = cur

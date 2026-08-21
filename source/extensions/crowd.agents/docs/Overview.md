@@ -5,8 +5,10 @@
 ## Modules
 
 - `extension.py` — lifecycle and update loop
-- `ui.py` — control panel
+- `ui.py` — Crowd Sim panel + Individual Agent Info
 - `simulation.py` — per-frame orchestration
+- `inspect.py` — viewport click/hover → inspect agent (no lasting USD selection)
+- `viz.py` — highlight colors + selected-agent FOV wireframe
 - `agent.py` — agent state
 - `navigation.py` — NavMesh / path following
 - `fire.py` — fire trigger and perception
@@ -14,4 +16,4 @@
 
 ## Workflow
 
-Open Venue → Generate NavMesh → Spawn Agents → Run → Trigger Fire → Observe
+Open Venue → Generate NavMesh → Spawn Agents → click agent (info panel) → Run → Trigger Fire → Observe

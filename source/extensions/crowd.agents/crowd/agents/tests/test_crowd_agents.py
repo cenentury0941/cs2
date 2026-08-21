@@ -147,6 +147,93 @@ class Test(omni.kit.test.AsyncTestCase):
         nav._advance_past_waypoints(agent)
         self.assertGreaterEqual(agent.waypoint_index, 2)
 
+    async def test_agent_prim_path_helper(self):
+        from crowd.agents.simulation import _is_agent_prim_path
+
+        self.assertTrue(_is_agent_prim_path("/World/CrowdAgents/Agent_001"))
+        self.assertTrue(_is_agent_prim_path("/World/CrowdAgents/Agent_012/Geom"))
+        self.assertFalse(_is_agent_prim_path("/World/CrowdAgents/Fire"))
+        self.assertFalse(_is_agent_prim_path("/World/CrowdAgents/TestCube"))
+        self.assertFalse(_is_agent_prim_path("/World/Seat_001"))
+
+    async def test_inspect_horizontal_distance(self):
+        from crowd.agents.inspect import horizontal_distance
+
+        d = horizontal_distance((0.0, 0.0, 0.0), (3.0, 5.0, 4.0), "Y")
+        self.assertAlmostEqual(d, 5.0, places=5)
+
+    async def test_fov_sector_polyline(self):
+        from crowd.agents.viz import fov_sector_polyline
+
+        pts = fov_sector_polyline(
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
+            up="Y",
+            height=1.7,
+            fov_deg=90.0,
+            range_m=10.0,
+            segments=8,
+        )
+        # eye → left → arc… → right → eye
+        self.assertGreaterEqual(len(pts), 11)
+        self.assertAlmostEqual(pts[0][0], pts[-1][0], places=5)
+        self.assertAlmostEqual(pts[0][1], pts[-1][1], places=5)
+        self.assertAlmostEqual(pts[0][2], pts[-1][2], places=5)
+        # Eye lifted on Y
+        self.assertGreater(pts[0][1], 1.0)
+
+    async def test_agent_highlight_color_priority(self):
+        from crowd.agents.viz import COLOR_HOVERED, COLOR_SELECTED, agent_highlight_color
+
+        self.assertEqual(
+            agent_highlight_color(selected=True, hovered=True, evacuating=True),
+            COLOR_SELECTED,
+        )
+        self.assertEqual(
+            agent_highlight_color(selected=False, hovered=True, evacuating=False),
+            COLOR_HOVERED,
+        )
+
+    async def test_ray_capsule_frontmost(self):
+        from crowd.agents.agent import Agent
+        from crowd.agents.inspect import pick_frontmost_along_ray, ray_capsule_intersection_t
+
+        # Ray along +Z from origin; near agent at z=2, far at z=8
+        near = Agent(
+            agent_id="near",
+            prim_path="/World/CrowdAgents/Agent_001",
+            position=(0.0, 0.0, 2.0),
+            height=1.7,
+            radius=0.35,
+        )
+        far = Agent(
+            agent_id="far",
+            prim_path="/World/CrowdAgents/Agent_002",
+            position=(0.0, 0.0, 8.0),
+            height=1.7,
+            radius=0.35,
+        )
+        origin = (0.0, 0.85, -1.0)
+        direction = (0.0, 0.0, 1.0)
+        t_near = ray_capsule_intersection_t(
+            origin, direction, near.position, near.height, near.radius, up="Y"
+        )
+        t_far = ray_capsule_intersection_t(
+            origin, direction, far.position, far.height, far.radius, up="Y"
+        )
+        self.assertIsNotNone(t_near)
+        self.assertIsNotNone(t_far)
+        self.assertLess(t_near, t_far)
+        picked = pick_frontmost_along_ray([far, near], origin, direction, up="Y")
+        self.assertIsNotNone(picked)
+        self.assertEqual(picked.agent_id, "near")
+
+        # Miss: ray beside agents
+        miss = ray_capsule_intersection_t(
+            (5.0, 0.85, -1.0), direction, near.position, near.height, near.radius, up="Y"
+        )
+        self.assertIsNone(miss)
+
     async def test_window_smoke_buttons_exist(self):
         spawn = ui_test.find(
             f"{WINDOW_TITLE}//Frame/**/Button[*].text=='Spawn Agents (idle on Spawn)'"

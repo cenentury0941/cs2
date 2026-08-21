@@ -3,6 +3,15 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [0.1.2] - 2026-08-21
+- Phase 5 (partial): Individual Agent Info shows live state for the click-inspected agent
+- Viewport click inspects an agent without keeping USD/Stage selection on capsules
+- Agent prims marked unpickable; Stage picks are cleared immediately
+- Selected agent: green highlight + FOV wireframe (210° / 20 m at eye height)
+- Hovered agent: light-green highlight
+- Agent pick uses camera-ray vs capsule (frontmost); SceneView NDC aligned to viewport
+- State-change log on Agent Info (intent, goal, fire seen, arrival)
+
 ## [0.1.1] - 2026-08-21
 - Phase 4a: Start Fire / Cancel placement with viewport preview cuboid and click-to-spawn
 - Agent debug colors: blue toward seat, red toward exit
