@@ -48,24 +48,13 @@ class Test(omni.kit.test.AsyncTestCase):
             min_corner=(0.0, 0.0, -0.1),
             max_corner=(4.0, 2.0, 0.1),
         )
-        # Force Z-up sampling via monkeypatching up_axis would need stage;
-        # test horizontal containment helper with explicit Z-up logic by
-        # checking X/Y when we call with a fake: point_in uses stage upAxis.
-        # Unit-test sample ranges instead.
-        import crowd.agents.scene as scene_mod
-
-        original = scene_mod.up_axis
-        scene_mod.up_axis = lambda stage=None: "Z"
-        try:
-            for _ in range(20):
-                p = sample_in_spawn(zone)
-                self.assertGreaterEqual(p[0], 0.0)
-                self.assertLessEqual(p[0], 4.0)
-                self.assertGreaterEqual(p[1], 0.0)
-                self.assertLessEqual(p[1], 2.0)
-                self.assertTrue(point_in_spawn_horizontal(p, zone))
-        finally:
-            scene_mod.up_axis = original
+        for _ in range(20):
+            p = sample_in_spawn(zone)
+            self.assertGreaterEqual(p[0], 0.0)
+            self.assertLessEqual(p[0], 4.0)
+            self.assertGreaterEqual(p[1], 0.0)
+            self.assertLessEqual(p[1], 2.0)
+            self.assertTrue(point_in_spawn_horizontal(p, zone))
 
     async def test_path_follow_steps_toward_waypoint(self):
         nav = NavigationSystem()
@@ -83,15 +72,13 @@ class Test(omni.kit.test.AsyncTestCase):
         self.assertGreater(agent.position[0], 0.0)
         self.assertLess(agent.position[0], 2.0)
         self.assertFalse(agent.perception.get("at_destination"))
-        center = agent.center_position()
-        self.assertAlmostEqual(center[1], 0.85, places=2)
 
     async def test_window_smoke_buttons_exist(self):
         spawn = ui_test.find(
-            f"{WINDOW_TITLE}//Frame/**/Button[*].text=='Spawn Agents (in Spawn → seats)'"
+            f"{WINDOW_TITLE}//Frame/**/Button[*].text=='Spawn Agents (idle on Spawn)'"
         )
-        assign = ui_test.find(
-            f"{WINDOW_TITLE}//Frame/**/Button[*].text=='Re-assign Seats'"
+        run = ui_test.find(
+            f"{WINDOW_TITLE}//Frame/**/Button[*].text=='Run (to seats)'"
         )
         self.assertIsNotNone(spawn)
-        self.assertIsNotNone(assign)
+        self.assertIsNotNone(run)

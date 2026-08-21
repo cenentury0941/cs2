@@ -104,12 +104,21 @@ class Simulation:
             for agent in self._agents:
                 if self._fire.is_active:
                     self._ensure_exit_destination(agent)
+                    if agent.destination is not None:
+                        agent.perception["at_destination"] = False
+                        self._navigation.set_destination(agent, agent.destination)
                 elif agent.destination is not None:
+                    # Prompted walk: Spawn → assigned Seat.XXX
                     agent.perception["at_destination"] = False
                     self._navigation.set_destination(agent, agent.destination)
                 agent.sync_to_usd()
-        self._running = running
-        self._status = "Running" if running else "Paused"
+            self._running = True
+            self._status = f"Running — {len(self._agents)} agents walking Spawn → seats"
+            self._log(self._status)
+            return
+
+        self._running = False
+        self._status = "Paused"
         self._log(self._status)
 
     def reset(self) -> None:
@@ -117,10 +126,14 @@ class Simulation:
         self._fire.reset()
         for agent in self._agents:
             agent.reset()
-            if agent.destination is not None:
-                self._navigation.set_destination(agent, agent.destination)
+            agent.waypoints = []
+            agent.waypoint_index = 0
+            agent.intent = "IDLE"
+            agent.perception["at_destination"] = False
             agent.sync_to_usd()
-        self._status = f"Reset — {len(self._agents)} agents back at spawn (paths re-planned to seats)."
+        self._status = (
+            f"Reset — {len(self._agents)} agents back at Spawn (idle). Press Run to seats."
+        )
         self._log("Simulation reset")
 
     def open_venue_dialog(self) -> None:
@@ -280,10 +293,15 @@ class Simulation:
         up = scene_util.up_axis(stage)
 
         for i, seat in enumerate(assigned_seats):
-            feet = self._sample_spawn_feet(spawn_zone)
+            feet = scene_util.sample_spawn_feet_on_navmesh(
+                spawn_zone,
+                snap_fn=self._navigation.snap_to_navmesh,
+                rng=self._rng,
+            )
             if feet is None:
                 self._status = (
-                    f"Could only place {len(agents)} agents inside Spawn + NavMesh."
+                    f"Could only place {len(agents)} agents inside Spawn X/Y on NavMesh. "
+                    "Ensure the Spawn plane overlaps the baked NavMesh."
                 )
                 self._log(self._status)
                 break
@@ -305,20 +323,31 @@ class Simulation:
             agent.spawn_position = feet
             agent.memory["seat_position"] = list(seat_pos)
             agent.perception["seat_known"] = True
+            agent.perception["at_destination"] = False
+            # Idle at Spawn until Run — do not plan seat paths yet
+            agent.waypoints = []
+            agent.waypoint_index = 0
+            agent.intent = "IDLE"
             agent.sync_to_usd()
             agents.append(agent)
 
         self._agents = agents
         if not agents:
-            self._status = "Failed to spawn any agents inside Spawn bounds."
+            self._status = (
+                "Failed to spawn inside Spawn X/Y on NavMesh — "
+                "check Spawn overlaps the cyan walkable area."
+            )
             self._log(self._status)
             return
 
         exit_names = [e.name for e in self._exits] or ["(none)"]
+        x0, x1 = spawn_zone.x_range
+        y0, y1 = spawn_zone.y_range
         self._status = (
-            f"Spawned {len(agents)} agents in Spawn → seats "
+            f"Spawned {len(agents)} idle agents in Spawn "
+            f"X[{x0:.1f},{x1:.1f}] Y[{y0:.1f},{y1:.1f}] → "
             f"{assigned_seats[0].name}…{assigned_seats[len(agents) - 1].name}. "
-            f"Exits: {', '.join(exit_names)}. Press Run."
+            f"Exits: {', '.join(exit_names)}. Press Run to walk to seats."
         )
         self._log(self._status)
 
@@ -343,7 +372,7 @@ class Simulation:
         self._log(self._status)
 
     def assign_seats(self) -> None:
-        """Re-bind current agents to Seat.XXX and plan paths (without respawning)."""
+        """Re-bind current agents to Seat.XXX (paths planned on Run)."""
         if not self._agents:
             self._status = "Spawn Agents first."
             return
@@ -358,13 +387,18 @@ class Simulation:
             agent.assigned_seat = seat.name
             agent.seat_prim_path = seat.prim_path
             agent.goal = seat.name
+            agent.destination = seat_pos
             agent.memory["seat_position"] = list(seat_pos)
             agent.perception["seat_known"] = True
             agent.perception["at_destination"] = False
-            self._navigation.set_destination(agent, seat_pos)
+            agent.waypoints = []
+            agent.waypoint_index = 0
+            agent.intent = "IDLE"
             agent.sync_to_usd()
 
-        self._status = f"Assigned seats for {len(self._agents)} agents. Press Run."
+        self._status = (
+            f"Assigned seats for {len(self._agents)} agents (still at Spawn). Press Run."
+        )
         self._log(self._status)
 
     def trigger_fire(self) -> None:
@@ -397,23 +431,6 @@ class Simulation:
             agent.destination = exit_pos
             agent.waypoints = []
             agent.waypoint_index = 0
-
-    def _sample_spawn_feet(self, spawn_zone: scene_util.SpawnZone) -> Optional[Vec3]:
-        for _ in range(40):
-            guess = scene_util.sample_in_spawn(spawn_zone, rng=self._rng)
-            snapped = self._navigation.snap_to_navmesh(guess)
-            if snapped is None:
-                continue
-            if scene_util.point_in_spawn_horizontal(snapped, spawn_zone, margin=0.5):
-                return snapped
-            # Accept snap if still reasonably near the spawn sample
-            if scene_util.point_in_spawn_horizontal(guess, spawn_zone, margin=0.1):
-                # Prefer staying inside spawn horizontally even if snap moved height
-                up = scene_util.up_axis()
-                if up == "Z":
-                    return (guess[0], guess[1], snapped[2])
-                return (guess[0], snapped[1], guess[2])
-        return None
 
     def _create_capsule(self, stage, prim_path: str, up: str) -> None:
         if stage.GetPrimAtPath(prim_path):

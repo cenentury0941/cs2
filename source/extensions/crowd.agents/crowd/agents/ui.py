@@ -42,13 +42,13 @@ class CrowdAgentsWindow:
 
                 ui.Label("Phase 3 — Seats", height=0, style={"font_size": 14})
                 ui.Label(
-                    "Needs prims: Spawn, Seat.000–Seat.024, Exit_A / Exit_B",
+                    "Spawn plane (random X/Y on NavMesh) → Seat.000–024 on Run",
                     height=0,
                     style={"color": 0xFFAAAAAA, "font_size": 12},
                 )
                 ui.Button("Generate NavMesh", clicked_fn=self._on_generate_navmesh, height=28)
                 ui.Button(
-                    "Spawn Agents (in Spawn → seats)",
+                    "Spawn Agents (idle on Spawn)",
                     clicked_fn=self._on_spawn_agents,
                     height=28,
                 )
@@ -59,7 +59,7 @@ class CrowdAgentsWindow:
                     height=28,
                 )
                 with ui.HStack(height=28, spacing=4):
-                    ui.Button("Run", clicked_fn=self._on_run)
+                    ui.Button("Run (to seats)", clicked_fn=self._on_run)
                     ui.Button("Pause", clicked_fn=self._on_pause)
                     ui.Button("Reset", clicked_fn=self._on_reset)
                 ui.Button("Trigger Fire → Exits", clicked_fn=self._on_trigger_fire, height=28)
