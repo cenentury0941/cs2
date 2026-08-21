@@ -8,8 +8,7 @@ from __future__ import annotations
 import math
 import random
 import threading
-import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import carb
 import omni.usd
@@ -39,9 +38,19 @@ AGENT_HEIGHT = 1.7
 AGENT_RADIUS = 0.35
 # Soft safety cap only — events persist for the whole run until spawn/reset.
 MAX_STATE_EVENTS = 10000
-# High-frequency motion, low-frequency SLM reasoning (~1 Hz).
-SLM_DECIDE_INTERVAL_S = 1.0
+# Persisted on the USD stage (survives File > Save / reopen).
+SLM_USD_KEY_ENABLED = "simulcrowd:slmEnabled"
+SLM_USD_KEY_BASE_URL = "simulcrowd:slmBaseUrl"
+SLM_USD_KEY_BATCH_SIZE = "simulcrowd:slmBatchSize"
+SLM_BATCH_SIZE_MIN = 1
+SLM_BATCH_SIZE_MAX = 128
+SLM_BATCH_SIZE_DEFAULT = 32
+# Pause agent motion when dirty+in-flight agents reach this (hysteresis below).
+SLM_THROTTLE_MIN_ENTER = 8
+# Soft zone: linear slowdown 0% → this fraction from backlog 1 … enter.
+SLM_THROTTLE_MAX_SOFT_SLOWDOWN = 0.25
 Vec3 = Tuple[float, float, float]
+PerceptionFingerprint = Tuple[bool, bool, bool, bool, bool]
 
 
 def _is_agent_prim_path(path: str) -> bool:
@@ -69,16 +78,21 @@ class Simulation:
             base_url=DEFAULT_SLM_BASE_URL, fallback=self._rules
         )
         self._use_slm = False
+        self._slm_batch_size = SLM_BATCH_SIZE_DEFAULT
         self._brain_intent: Dict[str, str] = {}
         self._brain_destination: Dict[str, Optional[str]] = {}
-        self._slm_interval_s = SLM_DECIDE_INTERVAL_S
-        self._last_slm_wall_t = 0.0
+        self._slm_perception_fp: Dict[str, PerceptionFingerprint] = {}
+        self._slm_dirty: Set[str] = set()
+        self._slm_inflight_ids: Set[str] = set()
+        self._slm_sent_fp: Dict[str, PerceptionFingerprint] = {}
         self._slm_tick = 0
         self._slm_lock = threading.Lock()
         self._slm_inflight = False
         self._slm_pending: Optional[List[AgentDecision]] = None
         self._slm_pending_error: Optional[str] = None
         self._slm_mode_label = "rules"
+        self._slm_ui_sync_requested = False
+        self._slm_throttled = False
         self._status = (
             "Ready — bake NavMesh, Spawn Agents (uses Spawn + Seat_XXX), Run."
         )
@@ -99,6 +113,8 @@ class Simulation:
                 self._on_stage_event, name="crowd.agents.agent_inspect"
             )
         )
+        # If a stage is already open (e.g. last session / reopen), restore SLM prefs.
+        self.load_slm_settings_from_stage()
 
     @property
     def use_slm(self) -> bool:
@@ -109,36 +125,88 @@ class Simulation:
         return self._slm.base_url
 
     @property
+    def slm_batch_size(self) -> int:
+        return self._slm_batch_size
+
+    @property
     def slm_status_text(self) -> str:
         if not self._use_slm:
             return "Decision: rules (local)"
+        backlog = self._slm_backlog()
+        if self._slm_throttled:
+            return (
+                f"THROTTLED — SLM backlog {backlog} "
+                f"(pending {len(self._slm_dirty)}, in-flight {len(self._slm_inflight_ids)})"
+            )
         if self._slm_inflight:
-            return f"Decision: SLM tick {self._slm_tick} in flight…"
+            return (
+                f"Decision: SLM tick {self._slm_tick} in flight "
+                f"({len(self._slm_inflight_ids)} agents), pending {len(self._slm_dirty)}…"
+            )
         err = self._slm_pending_error or self._slm.last_error
         if err:
             return f"Decision: SLM fallback — {err}"
-        return f"Decision: SLM ({self._slm_mode_label}) @ {self._slm.base_url}"
+        if backlog > 0:
+            return (
+                f"Decision: SLM pending {backlog} @ {self._slm.base_url} "
+                f"batch≤{self._slm_batch_size}"
+            )
+        return (
+            f"Decision: SLM ({self._slm_mode_label}) @ {self._slm.base_url} "
+            f"batch≤{self._slm_batch_size}"
+        )
 
-    def set_use_slm(self, enabled: bool) -> None:
+    @property
+    def is_slm_throttled(self) -> bool:
+        return bool(self._use_slm and self._slm_throttled)
+
+    def consume_slm_ui_sync(self) -> bool:
+        """True once after stage load so the Crowd Sim panel can refresh controls."""
+        if not self._slm_ui_sync_requested:
+            return False
+        self._slm_ui_sync_requested = False
+        return True
+
+    def set_use_slm(self, enabled: bool, *, persist: bool = True) -> None:
         self._use_slm = bool(enabled)
         self._brain = self._slm if self._use_slm else self._rules
         if not self._use_slm:
             self._slm_mode_label = "rules"
+            self._slm_dirty.clear()
+            self._slm_inflight_ids.clear()
+            self._slm_sent_fp.clear()
+            self._slm_throttled = False
             self._status = "Using rule-based decisions (local)."
         else:
             self._slm_mode_label = "remote"
-            self._last_slm_wall_t = 0.0  # allow immediate first tick on Run
+            self._mark_all_agents_slm_dirty()
             self._status = (
                 f"Using hosted SLM @ {self._slm.base_url} "
-                f"(~{self._slm_interval_s:.0f} Hz batch). Check Ready before Run."
+                f"(decide on perception change, batch≤{self._slm_batch_size}). "
+                f"Check Ready before Run."
             )
         self._log(self._status)
+        if persist:
+            self.save_slm_settings_to_stage()
 
-    def set_slm_base_url(self, base_url: str) -> None:
+    def set_slm_base_url(self, base_url: str, *, persist: bool = True) -> None:
         url = (base_url or "").strip() or DEFAULT_SLM_BASE_URL
         self._slm.set_base_url(url)
         self._status = f"SLM base URL → {self._slm.base_url}"
         self._log(self._status)
+        if persist:
+            self.save_slm_settings_to_stage()
+
+    def set_slm_batch_size(self, batch_size: int, *, persist: bool = True) -> None:
+        try:
+            n = int(batch_size)
+        except (TypeError, ValueError):
+            n = SLM_BATCH_SIZE_DEFAULT
+        self._slm_batch_size = max(SLM_BATCH_SIZE_MIN, min(SLM_BATCH_SIZE_MAX, n))
+        self._status = f"SLM inference batch size → {self._slm_batch_size}"
+        self._log(self._status)
+        if persist:
+            self.save_slm_settings_to_stage()
 
     def probe_slm_ready(self) -> bool:
         ok = self._slm.check_ready()
@@ -151,6 +219,70 @@ class Simulation:
             )
         self._log(self._status)
         return ok
+
+    def save_slm_settings_to_stage(self) -> bool:
+        """Write Use-SLM + base URL + batch size onto ``/World/CrowdAgents`` customData."""
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return False
+        try:
+            self._ensure_xform(stage, "/World")
+            self._ensure_xform(stage, AGENTS_ROOT)
+            prim = stage.GetPrimAtPath(AGENTS_ROOT)
+            if not prim or not prim.IsValid():
+                return False
+            prim.SetCustomDataByKey(SLM_USD_KEY_ENABLED, bool(self._use_slm))
+            prim.SetCustomDataByKey(SLM_USD_KEY_BASE_URL, str(self._slm.base_url))
+            prim.SetCustomDataByKey(SLM_USD_KEY_BATCH_SIZE, int(self._slm_batch_size))
+            carb.log_info(
+                f"[crowd.agents] Saved SLM settings to stage "
+                f"(enabled={self._use_slm}, url={self._slm.base_url}, "
+                f"batch={self._slm_batch_size})"
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            carb.log_warn(f"[crowd.agents] Failed to save SLM settings: {exc}")
+            return False
+
+    def load_slm_settings_from_stage(self) -> bool:
+        """Restore SLM prefs from the open stage (no-op if keys missing)."""
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return False
+        prim = stage.GetPrimAtPath(AGENTS_ROOT)
+        if not prim or not prim.IsValid():
+            return False
+        try:
+            data = prim.GetCustomData()
+        except Exception:  # noqa: BLE001
+            return False
+        if not data:
+            return False
+
+        has_enabled = SLM_USD_KEY_ENABLED in data
+        has_url = SLM_USD_KEY_BASE_URL in data
+        has_batch = SLM_USD_KEY_BATCH_SIZE in data
+        if not has_enabled and not has_url and not has_batch:
+            return False
+
+        if has_url:
+            url = data.get(SLM_USD_KEY_BASE_URL)
+            if url is not None and str(url).strip():
+                self.set_slm_base_url(str(url).strip(), persist=False)
+        if has_batch:
+            self.set_slm_batch_size(data.get(SLM_USD_KEY_BATCH_SIZE), persist=False)
+        if has_enabled:
+            enabled = bool(data.get(SLM_USD_KEY_ENABLED))
+            self.set_use_slm(enabled, persist=False)
+
+        self._slm_ui_sync_requested = True
+        self._status = (
+            f"Loaded SLM settings from USD — "
+            f"{'enabled' if self._use_slm else 'rules'} @ {self._slm.base_url} "
+            f"(batch≤{self._slm_batch_size})"
+        )
+        self._log(self._status)
+        return True
 
     @property
     def status_text(self) -> str:
@@ -299,7 +431,7 @@ class Simulation:
         self._agent_watch.clear()
         self._brain_intent.clear()
         self._brain_destination.clear()
-        self._last_slm_wall_t = 0.0
+        self._clear_slm_perception_tracking()
         with self._slm_lock:
             self._slm_pending = None
             self._slm_pending_error = None
@@ -309,7 +441,19 @@ class Simulation:
 
     def _on_stage_event(self, event) -> None:
         try:
-            if event.type != int(omni.usd.StageEventType.SELECTION_CHANGED):
+            et = int(event.type)
+        except Exception:  # noqa: BLE001
+            return
+
+        try:
+            if et == int(omni.usd.StageEventType.OPENED):
+                self.load_slm_settings_from_stage()
+                return
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            if et != int(omni.usd.StageEventType.SELECTION_CHANGED):
                 return
         except Exception:  # noqa: BLE001
             return
@@ -405,13 +549,11 @@ class Simulation:
         if not self._running or dt <= 0.0:
             return
 
-        self._sim_time += dt
         fire_active = self._fire.is_active
         seated = 0
         evacuating = 0
         saw_fire = 0
         up = scene_util.up_axis()
-        self._fire.tick(dt)
 
         if not self._exits:
             self._exits = scene_util.find_exits()
@@ -430,9 +572,19 @@ class Simulation:
             if visible:
                 saw_fire += 1
 
+        if self._use_slm:
+            self._sync_slm_dirty_from_perception()
+
         self._apply_pending_slm_results()
         if self._use_slm:
             self._maybe_request_slm_batch()
+            self._update_slm_throttle()
+
+        motion_dt = self._motion_dt_for_slm_backlog(dt)
+        if motion_dt > 0.0:
+            self._sim_time += motion_dt
+            self._fire.tick(motion_dt)
+        # else: hard throttle — freeze clock + motion; SLM still drains above
 
         for agent in self._agents:
             brain_intent, preferred_dest = self._resolve_brain_decision(agent)
@@ -459,11 +611,13 @@ class Simulation:
                 intent = "WALK"
 
             agent.intent = intent
-            self._navigation.apply_intent(agent, intent, dt)
+            if motion_dt > 0.0:
+                self._navigation.apply_intent(agent, intent, motion_dt)
             self._track_agent_state_changes(agent, brain_intent)
 
         # Only moving agents collide; seated agents are ignored by others
-        self._separate_walking_agents(up)
+        if motion_dt > 0.0:
+            self._separate_walking_agents(up)
 
         self.refresh_visuals()
 
@@ -475,7 +629,16 @@ class Simulation:
                     seated += 1
 
         total = len(self._agents)
-        if fire_active:
+        if self._slm_throttled and self._use_slm:
+            backlog = self._slm_backlog()
+            self._status = (
+                f"THROTTLED — simulation paused while SLM catches up "
+                f"({backlog} agents pending/in-flight; "
+                f"dirty {len(self._slm_dirty)}, "
+                f"in-flight {len(self._slm_inflight_ids)}). "
+                f"Motion resumes when the backlog clears."
+            )
+        elif fire_active:
             fleeing = sum(
                 1 for a in self._agents if (a.goal or "").startswith("Exit")
             )
@@ -483,10 +646,22 @@ class Simulation:
                 f"Running (FIRE) — {saw_fire}/{total} see fire, "
                 f"{fleeing} evacuating, {evacuating} at exits"
             )
+            if self._use_slm and motion_dt < dt * 0.999 and motion_dt > 0.0:
+                slowdown_pct = (1.0 - (motion_dt / dt)) * 100.0
+                self._status = (
+                    f"{self._status} | SLM soft-throttle "
+                    f"{slowdown_pct:.0f}% slower (backlog {self._slm_backlog()})"
+                )
         else:
             walking = total - seated
             self._status = f"Running — {seated}/{total} seated, {walking} walking"
-        if self._use_slm:
+            if self._use_slm and motion_dt < dt * 0.999 and motion_dt > 0.0:
+                slowdown_pct = (1.0 - (motion_dt / dt)) * 100.0
+                self._status = (
+                    f"{self._status} | SLM soft-throttle "
+                    f"{slowdown_pct:.0f}% slower (backlog {self._slm_backlog()})"
+                )
+        if self._use_slm and not self._slm_throttled:
             self._status = f"{self._status} | {self.slm_status_text}"
 
     def set_running(self, running: bool) -> None:
@@ -505,7 +680,7 @@ class Simulation:
                     self._log(self._status)
                     self._apply_rule_decisions_to_cache()
                 else:
-                    self._last_slm_wall_t = 0.0  # fire first batch ASAP
+                    self._mark_all_agents_slm_dirty()
             for agent in self._agents:
                 # Already evacuating (saw fire earlier) — repath to exit
                 if self._fire.is_active and (agent.goal or "").startswith("Exit"):
@@ -517,6 +692,9 @@ class Simulation:
                     # Prompted walk: Spawn → assigned Seat_XXX
                     agent.perception["at_destination"] = False
                     self._navigation.set_destination(agent, agent.destination)
+            if self._use_slm:
+                # at_destination cleared above — force an initial SLM decide on Run.
+                self._mark_all_agents_slm_dirty()
             self.refresh_visuals()
             self._running = True
             self._note_state_change("sim", "run")
@@ -534,7 +712,7 @@ class Simulation:
         self._fire.reset()
         self._brain_intent.clear()
         self._brain_destination.clear()
-        self._last_slm_wall_t = 0.0
+        self._clear_slm_perception_tracking()
         with self._slm_lock:
             self._slm_pending = None
             self._slm_pending_error = None
@@ -580,13 +758,14 @@ class Simulation:
                 self._agent_watch.clear()
                 self._brain_intent.clear()
                 self._brain_destination.clear()
-                self._last_slm_wall_t = 0.0
+                self._clear_slm_perception_tracking()
                 with self._slm_lock:
                     self._slm_pending = None
                     self._slm_pending_error = None
                 self._state_events.clear()
                 self._sim_time = 0.0
                 clear_fov_wireframe()
+                self.load_slm_settings_from_stage()
                 self._status = f"Opened: {filename}"
                 self._log(self._status)
             else:
@@ -789,7 +968,7 @@ class Simulation:
         self._agent_watch.clear()
         self._brain_intent.clear()
         self._brain_destination.clear()
-        self._last_slm_wall_t = 0.0
+        self._clear_slm_perception_tracking()
         with self._slm_lock:
             self._slm_pending = None
             self._slm_pending_error = None
@@ -807,6 +986,9 @@ class Simulation:
             self._seed_agent_watch(agent, "IDLE")
             seat = agent.assigned_seat or "—"
             self._note_state_change(agent.agent_id, "spawned", f"seat {seat}")
+
+        if self._use_slm:
+            self._mark_all_agents_slm_dirty()
 
         self._set_agents_pickable(False)
         if self._inspect_picker:
@@ -994,21 +1176,139 @@ class Simulation:
         if error:
             self._slm_mode_label = "fallback"
             self._note_state_change("sim", "SLM fallback", error[:80])
-            self._apply_rule_decisions_to_cache()
+            failed_ids = set(self._slm_inflight_ids)
+            # Rule-fill the agents we attempted; keep them dirty to retry later.
+            failed_agents = [a for a in self._agents if a.agent_id in failed_ids]
+            self._apply_rule_decisions_to_cache(failed_agents or None)
+            self._slm_dirty.update(failed_ids)
+            self._slm_inflight_ids.clear()
+            self._slm_sent_fp.clear()
             return
 
         if not pending:
             return
 
         self._slm_mode_label = "remote"
+        decided_ids = set()
         for decision in pending:
             self._brain_intent[decision.agent_id] = decision.intent
             self._brain_destination[decision.agent_id] = decision.destination
+            decided_ids.add(decision.agent_id)
+            sent_fp = self._slm_sent_fp.pop(decision.agent_id, None)
+            if sent_fp is not None:
+                self._slm_perception_fp[decision.agent_id] = sent_fp
+            self._slm_dirty.discard(decision.agent_id)
+            self._slm_inflight_ids.discard(decision.agent_id)
 
-    def _apply_rule_decisions_to_cache(self) -> None:
-        for decision in self._rules.decide_many(self._agents):
+        # If perception moved again while the request was in flight, re-queue.
+        for agent in self._agents:
+            if agent.agent_id not in decided_ids:
+                continue
+            fp = self._perception_fingerprint(agent)
+            if self._slm_perception_fp.get(agent.agent_id) != fp:
+                self._slm_dirty.add(agent.agent_id)
+
+    def _apply_rule_decisions_to_cache(
+        self, agents: Optional[List[Agent]] = None
+    ) -> None:
+        targets = agents if agents is not None else self._agents
+        for decision in self._rules.decide_many(targets):
             self._brain_intent[decision.agent_id] = decision.intent
             self._brain_destination[decision.agent_id] = decision.destination
+
+    @staticmethod
+    def _perception_fingerprint(agent: Agent) -> PerceptionFingerprint:
+        """Discrete perception bits that should trigger an SLM re-decide.
+
+        Excludes ``nearest_exit`` (changes continuously while walking and would
+        spam inference / flip Exit_A↔Exit_B every tick).
+        """
+        perception = agent.perception or {}
+        return (
+            bool(perception.get("fire_visible")),
+            bool(perception.get("smoke_visible")),
+            bool(perception.get("seat_known")),
+            bool(perception.get("at_destination")),
+            bool(agent.memory.get("fire_seen")),
+        )
+
+    def _clear_slm_perception_tracking(self) -> None:
+        self._slm_perception_fp.clear()
+        self._slm_dirty.clear()
+        self._slm_inflight_ids.clear()
+        self._slm_sent_fp.clear()
+        self._slm_throttled = False
+
+    def _slm_backlog(self) -> int:
+        return len(self._slm_dirty) + len(self._slm_inflight_ids)
+
+    def _slm_throttle_enter_threshold(self) -> int:
+        return max(SLM_THROTTLE_MIN_ENTER, min(int(self._slm_batch_size), 32))
+
+    def _update_slm_throttle(self) -> None:
+        """Enter/exit motion throttle from SLM backlog (with hysteresis)."""
+        if not self._use_slm:
+            if self._slm_throttled:
+                self._slm_throttled = False
+                self._note_state_change("sim", "SLM throttle cleared")
+            return
+
+        backlog = self._slm_backlog()
+        enter = self._slm_throttle_enter_threshold()
+        exit_at = max(2, enter // 2)
+        was = self._slm_throttled
+
+        if self._slm_throttled:
+            # Stay paused until backlog drains well below the enter line.
+            if backlog <= exit_at:
+                self._slm_throttled = False
+        else:
+            if backlog >= enter:
+                self._slm_throttled = True
+
+        if self._slm_throttled and not was:
+            self._note_state_change(
+                "sim",
+                "SLM throttle",
+                f"paused — backlog {backlog} (enter≥{enter})",
+            )
+        elif was and not self._slm_throttled:
+            self._note_state_change("sim", "SLM throttle cleared")
+
+    def _motion_dt_for_slm_backlog(self, dt: float) -> float:
+        """Hard pause when throttled; else linear 0%→25% slowdown from backlog 1.
+
+        Backlog 0 → full speed. Backlog 1 → 0% slowdown (ramp start).
+        Backlog == enter threshold → 25% slowdown. Above enter → hard pause
+        via ``_slm_throttled``.
+        """
+        if not self._use_slm:
+            return dt
+        if self._slm_throttled:
+            return 0.0
+        backlog = self._slm_backlog()
+        if backlog < 1:
+            return dt
+        enter = self._slm_throttle_enter_threshold()
+        span = max(1, enter - 1)
+        t = min(1.0, float(backlog - 1) / float(span))
+        slowdown = SLM_THROTTLE_MAX_SOFT_SLOWDOWN * t
+        return dt * (1.0 - slowdown)
+
+    def _mark_all_agents_slm_dirty(self) -> None:
+        """Force a decide for every agent (enable SLM / Run / spawn)."""
+        if not self._use_slm:
+            return
+        for agent in self._agents:
+            self._slm_perception_fp.pop(agent.agent_id, None)
+            self._slm_dirty.add(agent.agent_id)
+
+    def _sync_slm_dirty_from_perception(self) -> None:
+        for agent in self._agents:
+            fp = self._perception_fingerprint(agent)
+            last = self._slm_perception_fp.get(agent.agent_id)
+            if last != fp and agent.agent_id not in self._slm_inflight_ids:
+                self._slm_dirty.add(agent.agent_id)
 
     def _maybe_request_slm_batch(self) -> None:
         if not self._use_slm or not self._agents:
@@ -1016,20 +1316,30 @@ class Simulation:
         with self._slm_lock:
             if self._slm_inflight:
                 return
-        now = time.monotonic()
-        if self._last_slm_wall_t > 0.0 and (now - self._last_slm_wall_t) < self._slm_interval_s:
+
+        dirty_agents = [
+            a
+            for a in self._agents
+            if a.agent_id in self._slm_dirty and a.agent_id not in self._slm_inflight_ids
+        ]
+        if not dirty_agents:
             return
 
         self._slm_tick += 1
         request_id = f"sim-tick-{self._slm_tick}"
-        # Snapshot payload on the Kit thread; HTTP runs in a daemon worker.
-        agents = list(self._agents)
+        agents = dirty_agents
         payloads = [agent_to_slm_dict(a) for a in agents]
+        sent_fp = {a.agent_id: self._perception_fingerprint(a) for a in agents}
+        batch_size = self._slm_batch_size
         slm = self._slm
+
+        self._slm_inflight_ids = {a.agent_id for a in agents}
+        self._slm_sent_fp.update(sent_fp)
+        for a in agents:
+            self._slm_dirty.discard(a.agent_id)
 
         with self._slm_lock:
             self._slm_inflight = True
-        self._last_slm_wall_t = now
 
         def _worker() -> None:
             error: Optional[str] = None
@@ -1040,6 +1350,7 @@ class Simulation:
                     request_id=request_id,
                     require_ready=True,
                     agent_payloads=payloads,
+                    max_batch_size=batch_size,
                 )
             except Exception as exc:  # noqa: BLE001
                 error = str(exc)
@@ -1123,7 +1434,7 @@ class Simulation:
         self._agent_watch.clear()
         self._brain_intent.clear()
         self._brain_destination.clear()
-        self._last_slm_wall_t = 0.0
+        self._clear_slm_perception_tracking()
         with self._slm_lock:
             self._slm_pending = None
             self._slm_pending_error = None

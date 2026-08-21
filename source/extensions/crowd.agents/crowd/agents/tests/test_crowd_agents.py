@@ -146,10 +146,16 @@ class Test(omni.kit.test.AsyncTestCase):
         self.assertFalse(_path_blocks_los("/World/CrowdAgents/Fire"))
         self.assertFalse(_path_blocks_los("/World/CrowdAgents/Agent_001"))
         self.assertFalse(_path_blocks_los("/World/NavVolumes/Nav_001"))
+        self.assertFalse(_path_blocks_los("/World/CrowdAgents/AgentFovViz"))
         self.assertTrue(_path_blocks_los("/World/Venue/Wall_A"))
         self.assertTrue(_path_blocks_los("/World/Seat_003"))
         self.assertTrue(_path_blocks_los(""))  # fail-closed
 
+    async def test_los_confirm_constants(self):
+        from crowd.agents.fire import LOS_CONFIRM_CLEARS, LOS_SKIP_MAX
+
+        self.assertGreaterEqual(LOS_CONFIRM_CLEARS, 2)
+        self.assertGreaterEqual(LOS_SKIP_MAX, 2)
     async def test_seat_name_pattern(self):
         self.assertIsNotNone(SEAT_PATTERN.match("Seat_001"))
         self.assertIsNotNone(SEAT_PATTERN.match("Seat_100"))

@@ -36,7 +36,7 @@ class Agent:
     memory: Dict[str, Any] = field(default_factory=dict)
     waypoints: List[Vec3] = field(default_factory=list)
     waypoint_index: int = 0
-    speed_mps: float = 1.4
+    speed_mps: float = 1.0
     height: float = 1.7
     radius: float = 0.35
     retry_timer: float = 0.0

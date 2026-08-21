@@ -30,6 +30,10 @@ LOS_RETRY_S = 0.35
 LOS_HIT_SLACK_M = 0.35  # treat hits near the fire as "reached fire"
 EYE_HEIGHT_FRAC = 0.9
 LOS_DEBUG_LOGS = 8  # log first N LOS decisions to console
+# Skip non-occluders (nav volumes, etc.) and re-cast; never treat them as clear
+LOS_SKIP_MAX = 8
+# Require consecutive clear casts before sticky sighting (filters one-frame BVH gaps)
+LOS_CONFIRM_CLEARS = 2
 
 OnPlacedFn = Callable[[Vec3], None]
 
@@ -101,11 +105,13 @@ class FireSystem:
         self._preview_visible = False
         self._los_time = 0.0
         self._los_clear: Dict[str, bool] = {}
+        self._los_clear_streak: Dict[str, int] = {}
         self._los_next_check: Dict[str, float] = {}
         self._mesh_raycast = None
         self._mesh_ctx = None
         self._mesh_raycast_failed = False
         self._los_debug_left = LOS_DEBUG_LOGS
+        self._bvh_has_geometry = False
 
     def tick(self, dt: float) -> None:
         """Advance LOS timers (call once per sim update)."""
@@ -114,8 +120,10 @@ class FireSystem:
 
     def _clear_los_state(self) -> None:
         self._los_clear.clear()
+        self._los_clear_streak.clear()
         self._los_next_check.clear()
         self._los_debug_left = LOS_DEBUG_LOGS
+        # Keep _bvh_has_geometry — stage meshes persist across fire reset
 
     @property
     def is_active(self) -> bool:
@@ -221,13 +229,21 @@ class FireSystem:
         max_t = max(0.05, dist - LOS_HIT_SLACK_M)
 
         clear, hit_path, hit_dist = self._mesh_los_test(eye, direction, max_t)
-        self._los_clear[aid] = clear
+        if clear:
+            streak = self._los_clear_streak.get(aid, 0) + 1
+            self._los_clear_streak[aid] = streak
+            # Sticky only after consecutive confirms — one BVH miss must not grant vision
+            self._los_clear[aid] = streak >= LOS_CONFIRM_CLEARS
+        else:
+            self._los_clear_streak[aid] = 0
+            self._los_clear[aid] = False
         self._los_next_check[aid] = self._los_time + LOS_RETRY_S
 
         if self._los_debug_left > 0:
             self._los_debug_left -= 1
             carb.log_info(
                 f"[crowd.agents] LOS {aid}: clear={clear} "
+                f"streak={self._los_clear_streak.get(aid, 0)}/{LOS_CONFIRM_CLEARS} "
                 f"dist={dist:.2f} hit_dist={hit_dist} hit={hit_path or '(none)'}"
             )
 
@@ -254,32 +270,35 @@ class FireSystem:
             self._mesh_raycast_failed = True
             return None, None
 
-    def _mesh_los_test(
-        self, origin: Vec3, direction: Vec3, max_t: float
-    ) -> Tuple[bool, str, Optional[float]]:
-        """Return (clear, hit_path, hit_distance). Fail-closed: blocked if unsure."""
-        iface, ctx = self._acquire_mesh_raycast()
-        if iface is None or ctx is None:
-            # Do NOT fall back to FOV-only — that is what caused see-through walls
-            return False, "(no-raycast)", None
+    def _collect_disallow_paths(self) -> list:
+        """Meshes that must never occlude (or grant false clear): fire, agents, nav vols."""
+        disallow = [FIRE_PATH, FIRE_PREVIEW_PATH, "/World/CrowdAgents/AgentFovViz"]
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return disallow
 
-        # Ignore agents + fire so they never count as the first hit
-        try:
-            disallow = [FIRE_PATH, FIRE_PREVIEW_PATH, "/World/CrowdAgents/AgentFovViz"]
-            stage = omni.usd.get_context().get_stage()
-            if stage is not None:
-                root = stage.GetPrimAtPath("/World/CrowdAgents")
-                if root and root.IsValid():
-                    for child in root.GetChildren():
-                        name = child.GetName()
-                        if name.startswith("Agent_"):
-                            disallow.append(str(child.GetPath()))
-            if hasattr(iface, "set_disallowed_mesh_paths"):
-                iface.set_disallowed_mesh_paths(ctx, disallow)
-        except Exception:  # noqa: BLE001
-            pass
+        root = stage.GetPrimAtPath("/World/CrowdAgents")
+        if root and root.IsValid():
+            for child in root.GetChildren():
+                name = child.GetName()
+                if name.startswith("Agent_"):
+                    disallow.append(str(child.GetPath()))
 
-        result = None
+        # Nav include volumes are large boxes; hitting them must not count as clear LOS
+        for nav_path in ("/World/NavVolumes",):
+            nav_root = stage.GetPrimAtPath(nav_path)
+            if not nav_root or not nav_root.IsValid():
+                continue
+            stack = [nav_root]
+            while stack:
+                prim = stack.pop()
+                disallow.append(str(prim.GetPath()))
+                stack.extend(list(prim.GetChildren()))
+
+        return disallow
+
+    def _closest_raycast(self, iface, ctx, origin: Vec3, direction: Vec3, max_t: float):
+        """Try common vector types; return (result, error)."""
         last_err = None
         for o, d in (
             (origin, direction),
@@ -287,46 +306,113 @@ class FireSystem:
             (carb.Float3(*origin), carb.Float3(*direction)),
         ):
             try:
-                result = iface.closestRaycast(o, d, float(max_t), ctx)
-                break
+                return iface.closestRaycast(o, d, float(max_t), ctx), None
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
-                result = None
+        return None, last_err
+
+    def _probe_bvh_geometry(self, iface, ctx) -> None:
+        """One downward cast so empty eye→fire rays are not trusted before BVH exists."""
+        if self._bvh_has_geometry:
+            return
+        stage = omni.usd.get_context().get_stage()
+        up = "Y"
+        if stage is not None:
+            meta = stage.GetMetadata("upAxis")
+            if meta is not None:
+                up = str(meta)
+        base = self._position or (0.0, 0.0, 0.0)
+        origin = _lift_point(base, 8.0, up)
+        direction = (0.0, -1.0, 0.0) if up != "Z" else (0.0, 0.0, -1.0)
+        result, _err = self._closest_raycast(iface, ctx, origin, direction, 20.0)
         if result is None:
-            if last_err is not None:
-                carb.log_warn(f"[crowd.agents] closestRaycast failed: {last_err}")
-            return False, "(raycast-error)", None
+            return
+        if int(getattr(result, "meshIndex", -1)) >= 0:
+            self._bvh_has_geometry = True
 
-        mesh_index = int(getattr(result, "meshIndex", -1))
-        if mesh_index < 0:
-            # Nothing between eye and fire along the segment → clear
-            return True, "", None
+    def _mesh_los_test(
+        self, origin: Vec3, direction: Vec3, max_t: float
+    ) -> Tuple[bool, str, Optional[float]]:
+        """Return (clear, hit_path, hit_distance). Fail-closed: blocked if unsure.
 
-        path = ""
+        Non-occluding hits (nav volumes, agents, fire) are skipped and the ray is
+        re-cast — they must never grant vision through a wall behind them.
+        """
+        iface, ctx = self._acquire_mesh_raycast()
+        if iface is None or ctx is None:
+            # Do NOT fall back to FOV-only — that is what caused see-through walls
+            return False, "(no-raycast)", None
+
         try:
-            raw = iface.get_mesh_path_from_index(mesh_index)
-            path = str(raw) if raw is not None else ""
+            disallow = self._collect_disallow_paths()
         except Exception:  # noqa: BLE001
+            disallow = [FIRE_PATH, FIRE_PREVIEW_PATH, "/World/CrowdAgents/AgentFovViz"]
+
+        try:
+            if hasattr(iface, "set_disallowed_mesh_paths"):
+                iface.set_disallowed_mesh_paths(ctx, disallow)
+        except Exception:  # noqa: BLE001
+            pass
+
+        self._probe_bvh_geometry(iface, ctx)
+
+        for _attempt in range(LOS_SKIP_MAX):
+            try:
+                if hasattr(iface, "set_disallowed_mesh_paths"):
+                    iface.set_disallowed_mesh_paths(ctx, disallow)
+            except Exception:  # noqa: BLE001
+                pass
+
+            result, last_err = self._closest_raycast(iface, ctx, origin, direction, max_t)
+            if result is None:
+                if last_err is not None:
+                    carb.log_warn(f"[crowd.agents] closestRaycast failed: {last_err}")
+                return False, "(raycast-error)", None
+
+            mesh_index = int(getattr(result, "meshIndex", -1))
+            if mesh_index < 0:
+                # Empty segment. Until BVH has returned geometry, treat as blocked
+                # (cold BVH / bvhBuildOnFirstRequired would otherwise fail-open).
+                if not self._bvh_has_geometry:
+                    return False, "(bvh-cold)", None
+                return True, "", None
+
+            self._bvh_has_geometry = True
+
             path = ""
+            try:
+                raw = iface.get_mesh_path_from_index(mesh_index)
+                path = str(raw) if raw is not None else ""
+            except Exception:  # noqa: BLE001
+                path = ""
 
-        hit_dist = None
-        for attr in ("t", "distance", "hit_t", "dist"):
-            if hasattr(result, attr):
-                try:
-                    hit_dist = float(getattr(result, attr))
-                    break
-                except Exception:  # noqa: BLE001
-                    pass
+            hit_dist = None
+            for attr in ("t", "distance", "hit_t", "dist"):
+                if hasattr(result, attr):
+                    try:
+                        hit_dist = float(getattr(result, attr))
+                        break
+                    except Exception:  # noqa: BLE001
+                        pass
 
-        # Unknown / empty path still blocks — something was hit
-        if _path_is_fire(path) or not _path_blocks_los(path):
-            return True, path or "(ignored)", hit_dist
+            # Empty / unknown path still blocks — something was hit
+            if not path:
+                return False, "(unknown)", hit_dist
 
-        if hit_dist is not None and hit_dist >= max_t - 1e-3:
-            # Hit at the end of the segment — treat as reaching the fire area
-            return True, path, hit_dist
+            if _path_is_fire(path) or not _path_blocks_los(path):
+                # Skip this mesh and keep looking for a real occluder behind it
+                if path not in disallow:
+                    disallow.append(path)
+                continue
 
-        return False, path or "(unknown)", hit_dist
+            if hit_dist is not None and hit_dist >= max_t - 1e-3:
+                # Hit at the end of the segment — treat as reaching the fire area
+                return True, path, hit_dist
+
+            return False, path, hit_dist
+
+        # Exhausted skip budget while only hitting non-blockers — fail closed
+        return False, "(skip-budget)", None
 
     def _attach_viewport_overlay(self) -> bool:
         try:

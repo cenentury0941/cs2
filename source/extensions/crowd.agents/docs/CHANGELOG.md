@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Agent debug colors: blue toward seat, red toward exit
 - Phase 4b: fire perception via range (20m) + 210° FOV; sticky once seen; no global evacuate
 - Phase 4c: wall occlusion via omni.kit.mesh.raycast (fail-closed; no FOV-only fallback)
+- LOS: skip non-occluders and re-cast; require 2 consecutive clears; cold BVH stays blocked
 
 ## [0.1.0] - 2026-08-20
 - Initial Crowd Agents extension with control panel and USD smoke-test actions

@@ -304,22 +304,46 @@ class RemoteSLMDecisionEngine(DecisionEngine):
         request_id: str,
         require_ready: bool = True,
         agent_payloads: Optional[List[Dict[str, Any]]] = None,
+        max_batch_size: Optional[int] = None,
     ) -> List[AgentDecision]:
-        """POST /v1/decide for the whole agent list. Raises on transport/HTTP failure.
+        """POST /v1/decide for the agent list. Raises on transport/HTTP failure.
 
         Pass ``agent_payloads`` (from the Kit thread) to avoid racing live Agent
         mutation while the HTTP call runs on a worker thread.
+
+        If ``max_batch_size`` is set and the list is larger, the call is split
+        into sequential POSTs of at most that many agents (one GPU batch each).
         """
         if not agents:
             return []
+
+        rows = agent_payloads if agent_payloads is not None else [
+            agent_to_slm_dict(a) for a in agents
+        ]
+        if len(rows) != len(agents):
+            rows = [agent_to_slm_dict(a) for a in agents]
+
+        chunk = int(max_batch_size) if max_batch_size is not None else 0
+        if chunk > 0 and len(agents) > chunk:
+            out: List[AgentDecision] = []
+            part = 0
+            for i in range(0, len(agents), chunk):
+                part += 1
+                out.extend(
+                    self.decide_batch(
+                        agents[i : i + chunk],
+                        request_id=f"{request_id}-b{part}",
+                        require_ready=require_ready if part == 1 else False,
+                        agent_payloads=rows[i : i + chunk],
+                        max_batch_size=None,
+                    )
+                )
+            return out
 
         if require_ready and not self._last_ready_ok:
             if not self.check_ready():
                 raise RuntimeError(self._last_error or "SLM not ready")
 
-        rows = agent_payloads if agent_payloads is not None else [
-            agent_to_slm_dict(a) for a in agents
-        ]
         payload = {
             "request_id": request_id,
             "agents": rows,
@@ -418,7 +442,7 @@ class RemoteSLMDecisionEngine(DecisionEngine):
             got[aid] = normalize_decision(row, self._fallback, agent)
 
         # Any agent missing from the response → rule fallback for that row only
-        out: List[AgentDecision] = []
+        out = []
         for agent in agents:
             if agent.agent_id in got:
                 out.append(got[agent.agent_id])

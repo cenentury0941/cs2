@@ -9,6 +9,12 @@ from typing import TYPE_CHECKING, Dict, Optional
 
 import omni.ui as ui
 
+from .simulation import (
+    SLM_BATCH_SIZE_DEFAULT,
+    SLM_BATCH_SIZE_MAX,
+    SLM_BATCH_SIZE_MIN,
+)
+
 if TYPE_CHECKING:
     from .simulation import Simulation
 
@@ -40,12 +46,22 @@ class CrowdAgentsWindow:
         self._fire_button: Optional[ui.Button] = None
         self._slm_status_label: Optional[ui.Label] = None
         self._slm_url_field: Optional[ui.StringField] = None
+        self._slm_batch_label: Optional[ui.Label] = None
         self._use_slm_model = ui.SimpleBoolModel(False)
         self._use_slm_model.add_value_changed_fn(self._on_use_slm_changed)
+        self._suppress_slm_ui = False
+        self._slm_batch_model = ui.SimpleIntModel(
+            int(self._simulation.slm_batch_size or SLM_BATCH_SIZE_DEFAULT)
+        )
+        self._slm_batch_model.add_value_changed_fn(self._on_slm_batch_changed)
         self._agent_count_model = ui.SimpleIntModel(8)
         self._agent_count_model.add_value_changed_fn(self._on_agent_count_changed)
-        self._window = ui.Window(WINDOW_TITLE, width=400, height=680)
+        self._window = ui.Window(WINDOW_TITLE, width=400, height=720)
         self._build()
+        # Pick up settings if a stage was already open at panel creation.
+        if self._simulation.consume_slm_ui_sync():
+            self._sync_slm_controls_from_sim()
+        self.refresh_status()
 
     def _build(self) -> None:
         with self._window.frame:
@@ -111,7 +127,10 @@ class CrowdAgentsWindow:
 
                 ui.Label("Phase 6 — Hosted SLM", height=0, style={"font_size": 14})
                 ui.Label(
-                    "Laptop never loads the model — batch POST /v1/decide ~1 Hz.",
+                    "Laptop never loads the model — SLM only on perception change "
+                    "(fire/smoke/seat/arrived). Soft-throttle ramps 0–25% slower "
+                    "from 1 pending/in-flight agent; large backlogs pause motion "
+                    "(THROTTLED). Apply / toggle saves with USD.",
                     height=0,
                     word_wrap=True,
                     style={"color": 0xFFAAAAAA, "font_size": 12},
@@ -123,6 +142,18 @@ class CrowdAgentsWindow:
                     ui.Label("URL", width=36, height=0)
                     self._slm_url_field = ui.StringField(height=22)
                     self._slm_url_field.model.set_value(self._simulation.slm_base_url)
+                with ui.HStack(height=24, spacing=6):
+                    ui.Label("Batch", width=36, height=0)
+                    ui.IntSlider(
+                        self._slm_batch_model,
+                        min=SLM_BATCH_SIZE_MIN,
+                        max=SLM_BATCH_SIZE_MAX,
+                    )
+                    self._slm_batch_label = ui.Label(
+                        str(self._simulation.slm_batch_size),
+                        width=36,
+                        height=0,
+                    )
                 with ui.HStack(height=28, spacing=4):
                     ui.Button("Apply URL", clicked_fn=self._on_slm_apply_url)
                     ui.Button("Check Ready", clicked_fn=self._on_slm_check_ready)
@@ -143,6 +174,8 @@ class CrowdAgentsWindow:
                 )
 
     def refresh_status(self) -> None:
+        if self._simulation.consume_slm_ui_sync():
+            self._sync_slm_controls_from_sim()
         if self._status_label:
             self._status_label.text = self._simulation.status_text
         if self._slm_status_label:
@@ -152,6 +185,23 @@ class CrowdAgentsWindow:
                 "Cancel" if self._simulation.is_placing_fire else "Start Fire"
             )
 
+    def _sync_slm_controls_from_sim(self) -> None:
+        """Push restored stage settings into the checkbox / URL / batch controls."""
+        self._suppress_slm_ui = True
+        try:
+            if self._use_slm_model is not None:
+                self._use_slm_model.set_value(bool(self._simulation.use_slm))
+            if self._slm_url_field is not None:
+                self._slm_url_field.model.set_value(self._simulation.slm_base_url)
+            if self._slm_batch_model is not None:
+                self._slm_batch_model.set_value(int(self._simulation.slm_batch_size))
+            if self._slm_batch_label is not None:
+                self._slm_batch_label.text = str(self._simulation.slm_batch_size)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            self._suppress_slm_ui = False
+
     def destroy(self) -> None:
         self._window = None
         self._status_label = None
@@ -159,7 +209,9 @@ class CrowdAgentsWindow:
         self._fire_button = None
         self._slm_status_label = None
         self._slm_url_field = None
+        self._slm_batch_label = None
         self._use_slm_model = None
+        self._slm_batch_model = None
         self._agent_count_model = None
 
     def _agent_count(self) -> int:
@@ -175,7 +227,21 @@ class CrowdAgentsWindow:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _on_slm_batch_changed(self, model) -> None:
+        if getattr(self, "_suppress_slm_ui", False):
+            return
+        try:
+            value = int(model.get_value_as_int())
+        except Exception:  # noqa: BLE001
+            value = SLM_BATCH_SIZE_DEFAULT
+        if self._slm_batch_label is not None:
+            self._slm_batch_label.text = str(value)
+        self._simulation.set_slm_batch_size(value)
+        self.refresh_status()
+
     def _on_use_slm_changed(self, model) -> None:
+        if getattr(self, "_suppress_slm_ui", False):
+            return
         try:
             enabled = bool(model.get_value_as_bool())
         except Exception:  # noqa: BLE001
