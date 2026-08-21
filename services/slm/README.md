@@ -97,4 +97,21 @@ aws ssm start-session \
 
 Then `curl http://127.0.0.1:8080/health` / `python smoke_test.py`.
 
-Do not change the `/v1/decide` schema unilaterally.
+## Behavior / scenario tests
+
+Rule + parse unit tests (no server):
+
+```bash
+cd services/slm
+python -m unittest tests.test_decision_parse -v
+```
+
+Live model behavior across agent states (server must be up):
+
+```bash
+cd services/slm
+python tests/test_behavior_live.py --base http://127.0.0.1:8080
+```
+
+Scenarios live in `tests/scenarios.py` (fire, smoke, seated, lost, exit goal, etc.).
+
