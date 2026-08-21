@@ -23,8 +23,8 @@ class Test(omni.kit.test.AsyncTestCase):
         agent = Agent(
             agent_id="a1",
             prim_path="/World/CrowdAgents/A1",
-            goal="Seat.003",
-            assigned_seat="Seat.003",
+            goal="Seat_003",
+            assigned_seat="Seat_003",
         )
 
         self.assertEqual(brain.decide(agent), "GO_TO_SEAT")
@@ -36,11 +36,11 @@ class Test(omni.kit.test.AsyncTestCase):
         self.assertEqual(brain.decide(agent), "EXIT")
 
     async def test_seat_name_pattern(self):
-        self.assertIsNotNone(SEAT_PATTERN.match("Seat.000"))
-        self.assertIsNotNone(SEAT_PATTERN.match("Seat.024"))
-        self.assertIsNone(SEAT_PATTERN.match("Seat_000"))
-        self.assertIsNone(SEAT_PATTERN.match("Seat.24"))
-        self.assertEqual(int(SEAT_PATTERN.match("Seat.007").group(1)), 7)
+        self.assertIsNotNone(SEAT_PATTERN.match("Seat_000"))
+        self.assertIsNotNone(SEAT_PATTERN.match("Seat_024"))
+        self.assertIsNone(SEAT_PATTERN.match("Seat.000"))
+        self.assertIsNone(SEAT_PATTERN.match("Seat_24"))
+        self.assertEqual(int(SEAT_PATTERN.match("Seat_007").group(1)), 7)
 
     async def test_spawn_xy_bounds_z_up(self):
         zone = SpawnZone(

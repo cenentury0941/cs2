@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-NvidiaProprietary
 
-"""Stage discovery for Spawn zone, Seat.XXX planes, and Exit empties."""
+"""Stage discovery for Spawn zone, Seat_XXX planes, and Exit empties."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from pxr import Usd, UsdGeom
 Vec3 = Tuple[float, float, float]
 
 SPAWN_NAME = "Spawn"
-SEAT_PATTERN = re.compile(r"^Seat\.(\d{3})$")
+SEAT_PATTERN = re.compile(r"^Seat_(\d{3})$")
 EXIT_NAMES = ("Exit_A", "Exit_B")
 
 

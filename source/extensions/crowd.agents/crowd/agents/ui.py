@@ -16,7 +16,7 @@ WINDOW_TITLE = "Crowd Agents"
 
 
 class CrowdAgentsWindow:
-    """Omni UI panel for Phase 3: Spawn zone + Seat.XXX agents."""
+    """Omni UI panel for Phase 3: Spawn zone + Seat_XXX agents."""
 
     def __init__(self, simulation: "Simulation") -> None:
         self._simulation = simulation
@@ -42,7 +42,7 @@ class CrowdAgentsWindow:
 
                 ui.Label("Phase 3 — Seats", height=0, style={"font_size": 14})
                 ui.Label(
-                    "Spawn plane (random X/Y on NavMesh) → Seat.000–024 on Run",
+                    "Spawn plane (random X/Y on NavMesh) → Seat_000–024 on Run",
                     height=0,
                     style={"color": 0xFFAAAAAA, "font_size": 12},
                 )

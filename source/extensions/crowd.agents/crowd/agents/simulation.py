@@ -37,7 +37,7 @@ class Simulation:
         self._fire = FireSystem()
         self._brain: DecisionEngine = RuleBasedDecisionEngine()
         self._status = (
-            "Ready — bake NavMesh, Spawn Agents (uses Spawn + Seat.XXX), Run."
+            "Ready — bake NavMesh, Spawn Agents (uses Spawn + Seat_XXX), Run."
         )
         self._log_lines: List[str] = []
         self._exits = []
@@ -96,7 +96,7 @@ class Simulation:
 
     def set_running(self, running: bool) -> None:
         if running and not self._agents:
-            self._status = "Spawn Agents first (needs Spawn plane + Seat.XXX)."
+            self._status = "Spawn Agents first (needs Spawn plane + Seat_XXX)."
             self._log(self._status)
             return
         if running:
@@ -108,7 +108,7 @@ class Simulation:
                         agent.perception["at_destination"] = False
                         self._navigation.set_destination(agent, agent.destination)
                 elif agent.destination is not None:
-                    # Prompted walk: Spawn → assigned Seat.XXX
+                    # Prompted walk: Spawn → assigned Seat_XXX
                     agent.perception["at_destination"] = False
                     self._navigation.set_destination(agent, agent.destination)
                 agent.sync_to_usd()
@@ -254,7 +254,7 @@ class Simulation:
         self._log(self._status)
 
     def spawn_agents(self, count: Optional[int] = None) -> None:
-        """Phase 3: spawn N agents inside Spawn bounds, each assigned a Seat.XXX."""
+        """Phase 3: spawn N agents inside Spawn bounds, each assigned a Seat_XXX."""
         stage = omni.usd.get_context().get_stage()
         if stage is None:
             self._status = "No stage open."
@@ -275,7 +275,7 @@ class Simulation:
         seats = scene_util.find_seats(stage)
         if not seats:
             self._status = (
-                "No Seat.XXX prims found (expected Seat.000 … Seat.024)."
+                "No Seat_XXX prims found (expected Seat_000 … Seat_024)."
             )
             self._log(self._status)
             return
@@ -372,13 +372,13 @@ class Simulation:
         self._log(self._status)
 
     def assign_seats(self) -> None:
-        """Re-bind current agents to Seat.XXX (paths planned on Run)."""
+        """Re-bind current agents to Seat_XXX (paths planned on Run)."""
         if not self._agents:
             self._status = "Spawn Agents first."
             return
         seats = scene_util.find_seats()
         if not seats:
-            self._status = "No Seat.XXX prims found."
+            self._status = "No Seat_XXX prims found."
             return
 
         for i, agent in enumerate(self._agents):

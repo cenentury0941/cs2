@@ -83,7 +83,7 @@ Current Status
 -   Control panel + USD spawn/move cube smoke test
 -   NavMesh bundle enabled; cyan walkable bake verified
 -   Phase 2: single agent path-follow verified
--   Phase 3: Spawn bounds + Seat.000–024 + Exit_A/B multi-agent
+-   Phase 3: Spawn bounds + Seat_000–024 + Exit_A/B multi-agent
 
 Next Step
 

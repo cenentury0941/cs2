@@ -46,10 +46,10 @@ Phase 2 — NavMesh + one walking agent (DONE)
 Phase 3 — Multiple agents + seats (DONE in code)
 - scene.py discovers:
   - Spawn plane → horizontal spawn bounds (X/Y if Z-up)
-  - Seat.000 … Seat.024 planes
+  - Seat_000 … Seat_024 planes
   - Exit_A / Exit_B empties
 - Spawn Agents (default 8, max 10): positions only inside Spawn,
-  each assigned a unique Seat.XXX, paths planned on Run
+  each assigned a unique Seat_XXX, paths planned on Run
 - Re-assign Seats without respawning
 - Trigger Fire → nearest Exit_A/B (VFX still stub; Phase 4)
 - Status shows seated / walking counts
@@ -62,7 +62,7 @@ Repo / tooling notes
 - Context: Progress.txt, Crowd_Simulation_Project_Notes.txt
 - Scene naming contract for tests:
   - Spawn (plane)
-  - Seat.000 … Seat.024 (planes)
+  - Seat_000 … Seat_024 (planes)
   - Exit_A, Exit_B (empties)
 - Pushed historically to cs/feature/simulcrowd-phase1
 
@@ -102,5 +102,5 @@ Also still useful (asset / authoring)
 Suggested next action
 ---------------------
 In SimulCrowd: Generate NavMesh → Spawn Agents → Run.
-Confirm agents appear only on Spawn and walk to Seat.XXX.
+Confirm agents appear only on Spawn and walk to Seat_XXX.
 Then Phase 4: smoke volume perception + VFX.

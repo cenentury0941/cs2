@@ -34,7 +34,5 @@ class RuleBasedDecisionEngine(DecisionEngine):
             return "EXIT"
         if agent.destination is not None or agent.assigned_seat or goal.startswith("Seat"):
             return "GO_TO_SEAT"
-        if agent.destination is not None or goal:
-            return "GO_TO_SEAT"
         return "IDLE"
 
