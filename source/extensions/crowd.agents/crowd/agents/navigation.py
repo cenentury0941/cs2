@@ -187,6 +187,8 @@ class NavigationSystem:
             return
 
         if intent in ("GO_TO_SEAT", "EXIT", "WALK"):
+            if agent.perception.get("at_destination") and intent == "EXIT":
+                return
             if not agent.waypoints and agent.destination is not None:
                 self.set_destination(agent, agent.destination)
             self._follow_waypoints(agent, dt)

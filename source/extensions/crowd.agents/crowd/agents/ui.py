@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-NvidiaProprietary
 
-"""Control panel for venue load, NavMesh, and walking agents."""
+"""Control panel for venue load, NavMesh, and multi-agent seating."""
 
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ WINDOW_TITLE = "Crowd Agents"
 
 
 class CrowdAgentsWindow:
-    """Omni UI panel for Phase 2: bake, spawn one agent, walk."""
+    """Omni UI panel for Phase 3: Spawn zone + Seat.XXX agents."""
 
     def __init__(self, simulation: "Simulation") -> None:
         self._simulation = simulation
         self._status_label: Optional[ui.Label] = None
-        self._window = ui.Window(WINDOW_TITLE, width=380, height=480)
+        self._window = ui.Window(WINDOW_TITLE, width=400, height=520)
         self._build()
 
     def _build(self) -> None:
@@ -40,11 +40,21 @@ class CrowdAgentsWindow:
                     ui.Button("Move Cube +1m", clicked_fn=self._on_move_cube)
                 ui.Spacer(height=6)
 
-                ui.Label("Phase 2 — Walk", height=0, style={"font_size": 14})
+                ui.Label("Phase 3 — Seats", height=0, style={"font_size": 14})
+                ui.Label(
+                    "Needs prims: Spawn, Seat.000–Seat.024, Exit_A / Exit_B",
+                    height=0,
+                    style={"color": 0xFFAAAAAA, "font_size": 12},
+                )
                 ui.Button("Generate NavMesh", clicked_fn=self._on_generate_navmesh, height=28)
-                ui.Button("Spawn Agent", clicked_fn=self._on_spawn_agents, height=28)
                 ui.Button(
-                    "Set Random Destination",
+                    "Spawn Agents (in Spawn → seats)",
+                    clicked_fn=self._on_spawn_agents,
+                    height=28,
+                )
+                ui.Button("Re-assign Seats", clicked_fn=self._on_assign_seats, height=28)
+                ui.Button(
+                    "Set Random Destination (debug)",
                     clicked_fn=self._on_set_destination,
                     height=28,
                 )
@@ -52,7 +62,7 @@ class CrowdAgentsWindow:
                     ui.Button("Run", clicked_fn=self._on_run)
                     ui.Button("Pause", clicked_fn=self._on_pause)
                     ui.Button("Reset", clicked_fn=self._on_reset)
-                ui.Button("Trigger Fire", clicked_fn=self._on_trigger_fire, height=28)
+                ui.Button("Trigger Fire → Exits", clicked_fn=self._on_trigger_fire, height=28)
                 ui.Spacer(height=8)
 
                 ui.Label("Status", height=0, style={"font_size": 14})
@@ -88,6 +98,10 @@ class CrowdAgentsWindow:
 
     def _on_spawn_agents(self) -> None:
         self._simulation.spawn_agents()
+        self.refresh_status()
+
+    def _on_assign_seats(self) -> None:
+        self._simulation.assign_seats()
         self.refresh_status()
 
     def _on_set_destination(self) -> None:

@@ -28,6 +28,8 @@ class Agent:
     spawn_position: Vec3 = (0.0, 0.0, 0.0)
     goal: Optional[str] = None
     destination: Optional[Vec3] = None
+    assigned_seat: Optional[str] = None
+    seat_prim_path: Optional[str] = None
     intent: str = "IDLE"
     perception: Dict[str, Any] = field(default_factory=dict)
     memory: Dict[str, Any] = field(default_factory=dict)
@@ -50,10 +52,15 @@ class Agent:
         self.intent = "IDLE"
         self.waypoints = []
         self.waypoint_index = 0
-        self.destination = None
+        # Keep assigned seat as the default goal after reset
+        if self.assigned_seat and self.memory.get("seat_position"):
+            self.goal = self.assigned_seat
+            self.destination = tuple(self.memory["seat_position"])  # type: ignore[assignment]
+        else:
+            self.destination = None
         self.perception = {
             "fire_visible": False,
-            "seat_known": bool(self.goal),
+            "seat_known": bool(self.assigned_seat or self.goal),
             "at_destination": False,
         }
 

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import random
 from typing import List, Optional, Tuple
 
 import carb
@@ -15,10 +16,14 @@ from .agent import Agent
 from .ai import DecisionEngine, RuleBasedDecisionEngine
 from .fire import FireSystem
 from .navigation import NavigationSystem
+from . import scene as scene_util
 
 TEST_CUBE_PATH = "/World/CrowdAgents/TestCube"
-AGENT_PRIM_PATH = "/World/CrowdAgents/Agent_001"
 AGENTS_ROOT = "/World/CrowdAgents"
+DEFAULT_AGENT_COUNT = 8
+MAX_AGENTS = 10
+AGENT_HEIGHT = 1.7
+AGENT_RADIUS = 0.3
 Vec3 = Tuple[float, float, float]
 
 
@@ -31,8 +36,12 @@ class Simulation:
         self._navigation = NavigationSystem()
         self._fire = FireSystem()
         self._brain: DecisionEngine = RuleBasedDecisionEngine()
-        self._status = "Ready — bake NavMesh, spawn an agent, set destination, Run."
+        self._status = (
+            "Ready — bake NavMesh, Spawn Agents (uses Spawn + Seat.XXX), Run."
+        )
         self._log_lines: List[str] = []
+        self._exits = []
+        self._rng = random.Random(7)
 
     @property
     def status_text(self) -> str:
@@ -47,13 +56,21 @@ class Simulation:
             return
 
         fire_active = self._fire.is_active
+        seated = 0
+        evacuating = 0
+
         for agent in self._agents:
             agent.perception["fire_visible"] = self._fire.is_visible_to(agent)
-            if fire_active and not agent.perception.get("fire_visible"):
+            if fire_active:
                 agent.perception["fire_visible"] = True
 
             intent = self._brain.decide(agent)
-            if (
+
+            if intent == "EXIT":
+                self._ensure_exit_destination(agent)
+                if agent.destination is not None and not agent.perception.get("at_destination"):
+                    intent = "WALK"
+            elif (
                 intent == "GO_TO_SEAT"
                 and agent.destination is not None
                 and not agent.perception.get("at_destination")
@@ -64,29 +81,33 @@ class Simulation:
             self._navigation.apply_intent(agent, intent, dt)
             agent.sync_to_usd()
 
-        if self._agents:
-            a = self._agents[0]
-            if a.perception.get("at_destination"):
-                self._status = f"{a.agent_id} arrived"
-            else:
-                p = a.position
-                self._status = (
-                    f"Running — {a.agent_id} @ ({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f}) "
-                    f"intent={a.intent}"
-                )
+            if agent.perception.get("at_destination"):
+                if fire_active or (agent.goal or "").startswith("Exit"):
+                    evacuating += 1
+                else:
+                    seated += 1
+
+        total = len(self._agents)
+        if fire_active:
+            self._status = f"Running (FIRE) — {evacuating}/{total} at exits"
+        else:
+            walking = total - seated
+            self._status = f"Running — {seated}/{total} seated, {walking} walking"
 
     def set_running(self, running: bool) -> None:
         if running and not self._agents:
-            self._status = "Spawn an agent first."
+            self._status = "Spawn Agents first (needs Spawn plane + Seat.XXX)."
             self._log(self._status)
             return
         if running:
+            self._exits = scene_util.find_exits()
             for agent in self._agents:
-                if agent.destination is not None and not agent.waypoints:
-                    self._navigation.set_destination(agent, agent.destination)
-                if agent.destination is not None:
+                if self._fire.is_active:
+                    self._ensure_exit_destination(agent)
+                elif agent.destination is not None:
                     agent.perception["at_destination"] = False
-                    agent.goal = agent.goal or "destination"
+                    self._navigation.set_destination(agent, agent.destination)
+                agent.sync_to_usd()
         self._running = running
         self._status = "Running" if running else "Paused"
         self._log(self._status)
@@ -96,8 +117,10 @@ class Simulation:
         self._fire.reset()
         for agent in self._agents:
             agent.reset()
+            if agent.destination is not None:
+                self._navigation.set_destination(agent, agent.destination)
             agent.sync_to_usd()
-        self._status = "Reset"
+        self._status = f"Reset — {len(self._agents)} agents back at spawn (paths re-planned to seats)."
         self._log("Simulation reset")
 
     def open_venue_dialog(self) -> None:
@@ -205,7 +228,11 @@ class Simulation:
     def generate_navmesh(self) -> None:
         ok = self._navigation.generate_navmesh()
         if ok:
-            self._status = "NavMesh bake OK — spawn an agent."
+            info = scene_util.describe_scene()
+            self._status = (
+                f"NavMesh OK — Spawn={info['spawn']}, "
+                f"seats={info['seat_count']}, exits={info['exits']}"
+            )
         else:
             self._status = (
                 "NavMesh bake failed — create/scale Include Volume over the floor, "
@@ -213,123 +240,210 @@ class Simulation:
             )
         self._log(self._status)
 
-    def spawn_agents(self) -> None:
-        """Phase 2: spawn a single capsule agent snapped to the NavMesh."""
+    def spawn_agents(self, count: Optional[int] = None) -> None:
+        """Phase 3: spawn N agents inside Spawn bounds, each assigned a Seat.XXX."""
         stage = omni.usd.get_context().get_stage()
         if stage is None:
             self._status = "No stage open."
             return
 
         if not self._navigation.has_navmesh():
-            # Try bake once; user may already have cyan mesh from UI bake
             if not self._navigation.generate_navmesh() and not self._navigation.has_navmesh():
                 self._status = "No NavMesh — bake first (Generate NavMesh)."
                 self._log(self._status)
                 return
 
-        spawn = self._pick_spawn_point()
-        if spawn is None:
-            self._status = "Could not find a NavMesh spawn point."
+        spawn_zone = scene_util.find_spawn_zone(stage)
+        if spawn_zone is None:
+            self._status = 'No prim named "Spawn" found — add a Spawn plane for the spawn zone.'
             self._log(self._status)
             return
 
+        seats = scene_util.find_seats(stage)
+        if not seats:
+            self._status = (
+                "No Seat.XXX prims found (expected Seat.000 … Seat.024)."
+            )
+            self._log(self._status)
+            return
+
+        self._exits = scene_util.find_exits(stage)
+        wanted = count if count is not None else DEFAULT_AGENT_COUNT
+        wanted = max(1, min(wanted, MAX_AGENTS, len(seats)))
+
+        self._clear_agent_prims(stage)
         self._ensure_xform(stage, "/World")
         self._ensure_xform(stage, AGENTS_ROOT)
-        if stage.GetPrimAtPath(AGENT_PRIM_PATH):
-            stage.RemovePrim(AGENT_PRIM_PATH)
 
-        height = 1.7
-        radius = 0.3
-        capsule = UsdGeom.Capsule.Define(stage, AGENT_PRIM_PATH)
-        capsule.CreateHeightAttr(max(height - 2.0 * radius, 0.1))
-        capsule.CreateRadiusAttr(radius)
-        up = self._up_axis(stage)
-        capsule.CreateAxisAttr(UsdGeom.Tokens.y if up == "Y" else UsdGeom.Tokens.z)
+        agents: List[Agent] = []
+        assigned_seats = seats[:wanted]
+        up = scene_util.up_axis(stage)
 
-        # Logical position = feet on NavMesh; sync_to_usd lifts to capsule center.
-        agent = Agent(
-            agent_id="Agent_001",
-            prim_path=AGENT_PRIM_PATH,
-            position=spawn,
-            goal="destination",
-            height=height,
-        )
-        agent.spawn_position = spawn
-        xformable = UsdGeom.Xformable(capsule.GetPrim())
-        xformable.ClearXformOpOrder()
-        xformable.AddTranslateOp().Set(Gf.Vec3d(*agent.center_position()))
-        agent.sync_to_usd()
-        self._agents = [agent]
+        for i, seat in enumerate(assigned_seats):
+            feet = self._sample_spawn_feet(spawn_zone)
+            if feet is None:
+                self._status = (
+                    f"Could only place {len(agents)} agents inside Spawn + NavMesh."
+                )
+                self._log(self._status)
+                break
 
+            prim_path = f"{AGENTS_ROOT}/Agent_{i + 1:03d}"
+            self._create_capsule(stage, prim_path, up)
+
+            seat_pos = self._navigation.snap_to_navmesh(seat.position) or seat.position
+            agent = Agent(
+                agent_id=f"Agent_{i + 1:03d}",
+                prim_path=prim_path,
+                position=feet,
+                goal=seat.name,
+                destination=seat_pos,
+                assigned_seat=seat.name,
+                seat_prim_path=seat.prim_path,
+                height=AGENT_HEIGHT,
+            )
+            agent.spawn_position = feet
+            agent.memory["seat_position"] = list(seat_pos)
+            agent.perception["seat_known"] = True
+            agent.sync_to_usd()
+            agents.append(agent)
+
+        self._agents = agents
+        if not agents:
+            self._status = "Failed to spawn any agents inside Spawn bounds."
+            self._log(self._status)
+            return
+
+        exit_names = [e.name for e in self._exits] or ["(none)"]
         self._status = (
-            f"Spawned {agent.agent_id} feet=({spawn[0]:.1f}, {spawn[1]:.1f}, {spawn[2]:.1f}) "
-            "— set destination, then Run."
+            f"Spawned {len(agents)} agents in Spawn → seats "
+            f"{assigned_seats[0].name}…{assigned_seats[len(agents) - 1].name}. "
+            f"Exits: {', '.join(exit_names)}. Press Run."
         )
         self._log(self._status)
 
     def set_random_destination(self) -> None:
+        """Debug: random NavMesh goals (Phase 2). Prefer seats via Spawn Agents."""
         if not self._agents:
-            self._status = "Spawn an agent first."
+            self._status = "Spawn Agents first."
             return
 
-        agent = self._agents[0]
-        dest = self._navigation.random_point(seed_key="crowd.dest")
-        if dest is None:
-            dest = self._offset_on_ground(agent.position, 5.0, 0.0)
-            snapped = self._navigation.snap_to_navmesh(dest)
-            dest = snapped or dest
+        planned = 0
+        for agent in self._agents:
+            dest = self._navigation.random_point(seed_key="crowd.dest")
+            if dest is None:
+                continue
+            if self._navigation.set_destination(agent, dest):
+                agent.goal = "random"
+                agent.assigned_seat = None
+                planned += 1
+                agent.sync_to_usd()
 
-        # Keep planning in feet space (NavMesh), never write floor into capsule center.
-        ok = self._navigation.set_destination(agent, dest)
-        agent.goal = "destination"
-        agent.sync_to_usd()
-        if ok:
-            d = agent.destination or dest
-            self._status = (
-                f"Destination ({d[0]:.1f}, {d[1]:.1f}, {d[2]:.1f}) — "
-                f"{len(agent.waypoints)} waypoints. Press Run."
-            )
-        else:
-            self._status = "Failed to set destination."
+        self._status = f"Random destinations set for {planned}/{len(self._agents)} agents."
+        self._log(self._status)
+
+    def assign_seats(self) -> None:
+        """Re-bind current agents to Seat.XXX and plan paths (without respawning)."""
+        if not self._agents:
+            self._status = "Spawn Agents first."
+            return
+        seats = scene_util.find_seats()
+        if not seats:
+            self._status = "No Seat.XXX prims found."
+            return
+
+        for i, agent in enumerate(self._agents):
+            seat = seats[i % len(seats)]
+            seat_pos = self._navigation.snap_to_navmesh(seat.position) or seat.position
+            agent.assigned_seat = seat.name
+            agent.seat_prim_path = seat.prim_path
+            agent.goal = seat.name
+            agent.memory["seat_position"] = list(seat_pos)
+            agent.perception["seat_known"] = True
+            agent.perception["at_destination"] = False
+            self._navigation.set_destination(agent, seat_pos)
+            agent.sync_to_usd()
+
+        self._status = f"Assigned seats for {len(self._agents)} agents. Press Run."
         self._log(self._status)
 
     def trigger_fire(self) -> None:
         self._fire.trigger()
-        self._status = "Fire triggered (stub VFX — Phase 4)."
+        self._exits = scene_util.find_exits()
+        for agent in self._agents:
+            agent.perception["fire_visible"] = True
+            agent.perception["at_destination"] = False
+            self._ensure_exit_destination(agent)
+            if agent.destination is not None:
+                self._navigation.set_destination(agent, agent.destination)
+            agent.sync_to_usd()
+        exits = [e.name for e in self._exits] or ["(none found)"]
+        self._status = (
+            f"Fire triggered — agents evacuating toward {', '.join(exits)} "
+            "(Phase 4 VFX still stub)."
+        )
         self._log(self._status)
 
-    def _pick_spawn_point(self) -> Optional[Vec3]:
-        point = self._navigation.random_point(seed_key="crowd.spawn")
-        if point is not None:
-            return point
-        # Try origin / common floor guesses
-        for guess in ((0.0, 0.0, 0.0), (0.0, 0.0, 0.1), (0.0, 0.1, 0.0), (1.0, 0.0, 1.0)):
+    def _ensure_exit_destination(self, agent: Agent) -> None:
+        if not self._exits:
+            self._exits = scene_util.find_exits()
+        exit_info = scene_util.nearest_exit(agent.position, self._exits)
+        if exit_info is None:
+            return
+        exit_pos = self._navigation.snap_to_navmesh(exit_info.position) or exit_info.position
+        # Replan if new exit or no path yet
+        if agent.goal != exit_info.name or agent.destination is None or not agent.waypoints:
+            agent.goal = exit_info.name
+            agent.destination = exit_pos
+            agent.waypoints = []
+            agent.waypoint_index = 0
+
+    def _sample_spawn_feet(self, spawn_zone: scene_util.SpawnZone) -> Optional[Vec3]:
+        for _ in range(40):
+            guess = scene_util.sample_in_spawn(spawn_zone, rng=self._rng)
             snapped = self._navigation.snap_to_navmesh(guess)
-            if snapped is not None:
+            if snapped is None:
+                continue
+            if scene_util.point_in_spawn_horizontal(snapped, spawn_zone, margin=0.5):
                 return snapped
+            # Accept snap if still reasonably near the spawn sample
+            if scene_util.point_in_spawn_horizontal(guess, spawn_zone, margin=0.1):
+                # Prefer staying inside spawn horizontally even if snap moved height
+                up = scene_util.up_axis()
+                if up == "Z":
+                    return (guess[0], guess[1], snapped[2])
+                return (guess[0], snapped[1], guess[2])
         return None
 
-    def _up_axis(self, stage) -> str:
-        up = stage.GetMetadata("upAxis")
-        if up is None:
-            return "Y"
-        return str(up)
+    def _create_capsule(self, stage, prim_path: str, up: str) -> None:
+        if stage.GetPrimAtPath(prim_path):
+            stage.RemovePrim(prim_path)
+        capsule = UsdGeom.Capsule.Define(stage, prim_path)
+        capsule.CreateHeightAttr(max(AGENT_HEIGHT - 2.0 * AGENT_RADIUS, 0.1))
+        capsule.CreateRadiusAttr(AGENT_RADIUS)
+        capsule.CreateAxisAttr(UsdGeom.Tokens.y if up == "Y" else UsdGeom.Tokens.z)
+        xformable = UsdGeom.Xformable(capsule.GetPrim())
+        xformable.ClearXformOpOrder()
+        xformable.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
+
+    def _clear_agent_prims(self, stage) -> None:
+        root = stage.GetPrimAtPath(AGENTS_ROOT)
+        if root and root.IsValid():
+            to_remove = []
+            for child in root.GetChildren():
+                name = child.GetName()
+                if name.startswith("Agent_") or name == "TestCube":
+                    to_remove.append(child.GetPath())
+            for path in to_remove:
+                stage.RemovePrim(path)
+        self._agents.clear()
 
     def _lift_point(self, floor_point: Vec3, amount: float) -> Vec3:
-        stage = omni.usd.get_context().get_stage()
-        up = self._up_axis(stage) if stage else "Y"
+        up = scene_util.up_axis()
         x, y, z = floor_point
         if up == "Z":
             return (x, y, z + amount)
         return (x, y + amount, z)
-
-    def _offset_on_ground(self, point: Vec3, dx: float, dz_or_dy: float) -> Vec3:
-        stage = omni.usd.get_context().get_stage()
-        up = self._up_axis(stage) if stage else "Y"
-        x, y, z = point
-        if up == "Z":
-            return (x + dx, y + dz_or_dy, z)
-        return (x + dx, y, z + dz_or_dy)
 
     def _ensure_xform(self, stage, path: str) -> None:
         if not stage.GetPrimAtPath(path):
