@@ -2,9 +2,9 @@ SimulCrowd — Progress
 =====================
 
 Last updated: 2026-08-21
-Branch: main
+Branch: feature/simulcrowd-phase1 (includes origin/main @ 63ed526)
 Primary remote: git@gitlab.presidio.com:rakhulkr/simulcrowd.git (origin)
-Also: https://github.com/cenentury0941/cs.git (cs) — historical feature branch pushes
+Also: https://github.com/cenentury0941/cs.git (github) — historical feature branch pushes
 
 Goal
 ----
@@ -66,13 +66,29 @@ Phase 3b — Crowd pathing polish (DONE, on main)
 - Startup UI layout: Agent Info | Viewport | Stage/Render/Property + Crowd Sim
 - Convert Nav_XXX / Nav.XXX markers → NavMesh Include Volumes under
   /World/NavVolumes (pose/size from mesh local bbox × transform)
-- Latest push: origin/main @ 6191007
+- Latest push: origin/main @ 6191007 / Progress doc @ 63ed526
+
+Phase 6a — Hosted SLM service on Mac (DONE)
+- Standalone service under services/slm/ (outside Kit; Apple Silicon mlx_lm)
+- Model: mlx-community/Phi-4-mini-instruct-4bit (auto-download on first run)
+- One in-process worker for now (no multi-instance / load balance yet)
+- Frozen HTTP API:
+  - GET /health — process up
+  - GET /ready — 200 only after model loaded
+  - POST /v1/decide — batched agents → decisions
+- Intents only: GO_TO_SEAT | EXIT | IDLE
+- System prompt: SimulCrowd decision-engine style; JSON intent + destination
+- Per-agent parse/validate; invalid output falls back (e.g. fire → EXIT);
+  one bad agent never 500s the batch
+- run.py entrypoint (127.0.0.1:8080); smoke_test.py + curl verified
+- README notes Mac mlx_lm now; AWS/Ubuntu will swap worker behind same API
 
 
 Repo / tooling notes
 --------------------
 - App: source/apps/crowd.sim.kit
 - Extension: source/extensions/crowd.agents/
+- SLM service: services/slm/ (venv gitignored)
 - Context: Progress.txt, Crowd_Simulation_Project_Notes.txt
 - Agent brief: agent.md (Omniverse vs SLM labour split; gitignored locally)
 - Scene naming contract for tests:
@@ -96,12 +112,13 @@ Phase 5 — Debug / analytics panel
 - Run stats: time to seats, evacuation time, exit usage
 - Decision log (last N events)
 
-Phase 6 — SLM decision engine
-- Keep DecisionEngine.decide(agent_state) → Intent contract
-- RemoteSLMDecisionEngine (HTTP/WebSocket) on Mac or cloud GPU
-- Batched inference (not one process per agent)
-- Tiny perception JSON (exits, smoke, seat known — not raw mesh)
-- Laptop (4 GB VRAM) should not host the SLM
+Phase 6b — Wire Kit to hosted SLM + scale
+- RemoteSLMDecisionEngine HTTP client in crowd.agents (batch /v1/decide)
+- Keep DecisionEngine.decide(agent) → intent; ~1 Hz scheduler on Kit side
+- Tiny perception JSON from sim (exits, smoke, seat known — not raw mesh)
+- Multi-instance workers + load distribution
+- AWS/Ubuntu CUDA worker (e.g. vLLM) behind the same HTTP contract
+- Laptop (4 GB VRAM) must not host the SLM
 
 Phase 7 — Hackathon deploy + polish
 - Deploy same extension + assets to AWS g6e.xlarge or NVIDIA Brev
@@ -117,5 +134,7 @@ Also still useful (asset / authoring)
 Suggested next action
 ---------------------
 Multi-agent seat walk looks good enough for now.
-Next: Phase 4 — smoke/fire volume perception + simple VFX,
+Omniverse track: Phase 4 — smoke/fire volume perception + simple VFX,
 then verify Trigger Fire evacuates to Exit_A/B with perception-driven EXIT.
+SLM track: RemoteSLMDecisionEngine client in Kit; LAN connect via
+context/SLM_LAN_Connection.txt (Mac Wi‑Fi 172.19.190.197:8080).

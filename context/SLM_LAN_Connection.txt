@@ -1,0 +1,193 @@
+SimulCrowd — Connecting Windows Omniverse to Mac SLM (LAN)
+==========================================================
+
+Last updated: 2026-08-21
+
+Overview
+--------
+The Omniverse / Kit app runs on a Windows laptop (RTX). The SLM inference
+service runs on this MacBook (Apple Silicon, mlx_lm). Both machines must be
+on the same local network (same Wi‑Fi or Ethernet LAN).
+
+Windows does NOT load the model. It only sends HTTP batches and applies
+returned intents (GO_TO_SEAT / EXIT / IDLE).
+
+    Windows laptop (Omniverse)          MacBook (SLM host)
+    -------------------------          ------------------
+    crowd.agents                       services/slm/
+    RemoteSLMDecisionEngine  ----LAN----> FastAPI :8080
+    POST /v1/decide                    mlx_lm Phi-4-mini 4bit
+    GET  /health /ready                one worker (for now)
+
+
+This Mac’s current LAN config (recorded 2026-08-21)
+-------------------------------------------------
+Captured via `networksetup -getinfo Wi-Fi` / `ipconfig getifaddr en0`.
+
+    Interface:     Wi-Fi (en0)
+    IP address:    172.19.190.197
+    Subnet mask:   255.255.252.0
+    Router:        172.19.190.20
+    Config:        DHCP
+    Wi-Fi MAC:     6c:7e:67:d8:e8:21
+    Default route: via 172.19.190.20 on en0
+
+SLM base URL for the Windows laptop (use this):
+
+    http://172.19.190.197:8080
+
+Re-check if Wi‑Fi reconnects (DHCP can change the address):
+
+    ipconfig getifaddr en0
+
+
+1. Bind the SLM to the LAN (required)
+------------------------------------
+Default bind is 127.0.0.1, which ONLY accepts connections from the Mac
+itself. For the Windows laptop, start the server on all interfaces:
+
+    cd services/slm
+    source .venv/bin/activate
+    python run.py --host 0.0.0.0 --port 8080
+
+Or:
+
+    export SLM_HOST=0.0.0.0
+    export SLM_PORT=8080
+    python run.py
+
+Wait until GET /ready returns 200 (model finished loading).
+
+
+2. Confirm the Mac IP still matches
+-----------------------------------
+On the Mac (Terminal):
+
+    ipconfig getifaddr en0
+
+Expect: 172.19.190.197 (or a new address on the same 172.19.188.0/22-ish
+subnet if DHCP renewed). Do NOT use 127.0.0.1 from Windows.
+
+
+3. Allow inbound connections on the Mac
+---------------------------------------
+macOS may block incoming connections to Python/uvicorn:
+
+- System Settings → Network → Firewall
+  - If Firewall is On, allow python / Terminal, or temporarily turn it off
+    for local testing
+- Confirm nothing else is already using port 8080
+
+Optional quick check from the Mac itself (LAN IP, not localhost):
+
+    curl -s http://172.19.190.197:8080/health
+    curl -s http://172.19.190.197:8080/ready
+
+
+4. Test from the Windows laptop
+-------------------------------
+Both machines must reach each other (same SSID / subnet; no guest Wi‑Fi
+isolation). Windows should be on a 172.19.188.0–172.19.191.255 address
+(mask 255.255.252.0) to talk to this Mac without routing tricks.
+
+On Windows (PowerShell or cmd):
+
+    curl http://172.19.190.197:8080/health
+    curl http://172.19.190.197:8080/ready
+
+Decide smoke test:
+
+    curl http://172.19.190.197:8080/v1/decide ^
+      -H "Content-Type: application/json" ^
+      -d "{\"request_id\":\"lan-test-1\",\"agents\":[{\"id\":\"Agent_001\",\"goal\":\"Seat_003\",\"assigned_seat\":\"Seat_003\",\"intent\":\"WALK\",\"perception\":{\"fire_visible\":false,\"smoke_visible\":false,\"seat_known\":true,\"at_destination\":false,\"nearest_exit\":\"Exit_A\",\"exits\":[\"Exit_A\",\"Exit_B\"]}}]}"
+
+Or use a JSON file with curl.exe --data-binary @decide.json for easier quoting.
+
+Expected: HTTP 200 and JSON with request_id + decisions[].intent in
+{GO_TO_SEAT, EXIT, IDLE}.
+
+
+5. How Omniverse should call it
+------------------------------
+When RemoteSLMDecisionEngine is wired in crowd.agents:
+
+- Config base URL, e.g. env or UI field:
+    SLM_BASE_URL=http://172.19.190.197:8080
+- On sim start / before first decide:
+    GET {base}/ready  → must be 200
+- Each decision tick (~1 Hz, batched — not one HTTP call per agent):
+    POST {base}/v1/decide
+    Content-Type: application/json
+
+Request shape:
+
+    {
+      "request_id": "sim-tick-42",
+      "agents": [
+        {
+          "id": "Agent_001",
+          "goal": "Seat_003",
+          "assigned_seat": "Seat_003",
+          "intent": "WALK",
+          "perception": {
+            "fire_visible": false,
+            "smoke_visible": false,
+            "seat_known": true,
+            "at_destination": false,
+            "nearest_exit": "Exit_A",
+            "exits": ["Exit_A", "Exit_B"]
+          }
+        }
+      ]
+    }
+
+Response shape:
+
+    {
+      "request_id": "sim-tick-42",
+      "decisions": [
+        {
+          "id": "Agent_001",
+          "intent": "GO_TO_SEAT",
+          "destination": "Seat_003"
+        }
+      ]
+    }
+
+Timeouts: model load can take minutes on first boot; inference for a
+small batch is usually under a few seconds. Use a generous HTTP timeout
+(e.g. 30–120s) and fall back to RuleBasedDecisionEngine if /ready fails
+or the request errors.
+
+
+6. Network checklist / troubleshooting
+--------------------------------------
+Symptom: connection refused from Windows
+  - Server still bound to 127.0.0.1 → restart with --host 0.0.0.0
+  - Wrong IP (re-run ipconfig getifaddr en0; DHCP may have changed it)
+  - Firewall blocking port 8080 on Mac
+
+Symptom: timeout / no route
+  - Different Wi‑Fi networks or AP client isolation (hotel/guest Wi‑Fi)
+  - VPN on either machine routing LAN traffic away
+  - Windows not on the same 172.19.188.0/22 LAN as the Mac
+  - Corporate firewall between devices
+
+Symptom: /health 200 but /ready 503
+  - Model still loading; wait and retry
+
+Symptom: works on Mac localhost, fails from Windows
+  - Almost always bind host or firewall; not the Kit client yet
+
+Security note (hackathon LAN only)
+----------------------------------
+The SLM HTTP API has no auth. Binding 0.0.0.0 exposes it to anyone on
+the LAN who can reach port 8080. Fine for a closed demo network; do not
+expose to the public internet without a reverse proxy, TLS, and auth.
+
+
+Related files
+-------------
+- services/slm/README.md — local Mac run / smoke test
+- services/slm/server.py — /health, /ready, /v1/decide
+- context/Progress.txt — Phase 6a done; Phase 6b Kit client still pending
