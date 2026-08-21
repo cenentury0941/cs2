@@ -2,7 +2,7 @@ SimulCrowd — Progress
 =====================
 
 Last updated: 2026-08-21
-Branch: feature/simulcrowd-phase1 (includes origin/main @ 63ed526)
+Branch: main (ahead of origin/main; HEAD @ cbdf9ef)
 Primary remote: git@gitlab.presidio.com:rakhulkr/simulcrowd.git (origin)
 Also: https://github.com/cenentury0941/cs.git (github) — historical feature branch pushes
 
@@ -32,7 +32,7 @@ Phase 1 — Extension scaffold
 - Crowd Agents control panel (Open Venue, smoke-test cube, sim buttons)
 - USD smoke test: Spawn Cube / Move Cube +1m
 - DecisionEngine interface with RuleBasedDecisionEngine stub
-- FireSystem stub (global flag only)
+- FireSystem stub (replaced in Phase 4)
 
 Phase 2 — NavMesh + one walking agent (DONE)
 - omni.anim.navigation.bundle added to the app
@@ -51,7 +51,6 @@ Phase 3 — Multiple agents + seats (DONE)
   - Exit_A / Exit_B empties
 - Spawn Agents slider 1–100; unique random seats; paths planned on Run
 - Re-assign Seats without respawning
-- Trigger Fire → nearest Exit_A/B (VFX still stub; Phase 4)
 - Status shows seated / walking counts
 - Agent–agent separation (simple pairwise); seated/arrived agents ignored
 - Update dt fallback (1/30) if Kit omits dt
@@ -66,7 +65,18 @@ Phase 3b — Crowd pathing polish (DONE, on main)
 - Startup UI layout: Agent Info | Viewport | Stage/Render/Property + Crowd Sim
 - Convert Nav_XXX / Nav.XXX markers → NavMesh Include Volumes under
   /World/NavVolumes (pose/size from mesh local bbox × transform)
-- Latest push: origin/main @ 6191007 / Progress doc @ 63ed526
+
+Phase 4 — Fire + perception (DONE, main @ cbdf9ef)
+- Start Fire / Cancel: viewport hover preview cuboid, click-to-place
+- Red agent-sized cuboid at pick (no VFX / Flow — deferred)
+- Perception-driven EXIT (not global force-evacuate):
+  - fire_visible / smoke_visible from FOV + range + mesh LOS
+  - FOV 210°; view range 20 m; sticky once seen (memory fire_seen)
+  - omni.kit.mesh.raycast eye→fire; fail-closed on walls
+- Debug agent colors: blue → seat, red → exit
+- Status: see fire / evacuating / at exits while fire active
+- Deferred (optional): hesitate / follow nearby / pick different exits;
+  smoke volume VFX polish → Phase 7
 
 Phase 6a — Hosted SLM service on Mac (DONE)
 - Standalone service under services/slm/ (outside Kit; Apple Silicon mlx_lm)
@@ -82,6 +92,7 @@ Phase 6a — Hosted SLM service on Mac (DONE)
   one bad agent never 500s the batch
 - run.py entrypoint (127.0.0.1:8080); smoke_test.py + curl verified
 - README notes Mac mlx_lm now; AWS/Ubuntu will swap worker behind same API
+- Windows LAN verified against Mac Wi‑Fi (see SLM_LAN_Connection.txt)
 
 
 Repo / tooling notes
@@ -89,7 +100,8 @@ Repo / tooling notes
 - App: source/apps/crowd.sim.kit
 - Extension: source/extensions/crowd.agents/
 - SLM service: services/slm/ (venv gitignored)
-- Context: Progress.txt, Crowd_Simulation_Project_Notes.txt
+- Context: Progress.txt, Crowd_Simulation_Project_Notes.txt,
+  SLM_LAN_Connection.txt
 - Agent brief: agent.md (Omniverse vs SLM labour split; gitignored locally)
 - Scene naming contract for tests:
   - Spawn (plane)
@@ -100,12 +112,6 @@ Repo / tooling notes
 
 Pending
 -------
-
-Phase 4 — Fire + perception (rule-based)
-- Fire trigger with simple VFX / smoke volume (not real CFD)
-- Perception: fire_visible / smoke_visible from volume overlap
-  (not only global flag)
-- Optional variety: hesitate, follow nearby agent, pick different exits
 
 Phase 5 — Debug / analytics panel
 - Per-agent: id, intent, goal, fire perceived, exit chosen
@@ -122,7 +128,8 @@ Phase 6b — Wire Kit to hosted SLM + scale
 
 Phase 7 — Hackathon deploy + polish
 - Deploy same extension + assets to AWS g6e.xlarge or NVIDIA Brev
-- Camera / lighting / fire VFX polish
+- Camera / lighting / fire VFX polish (replace cuboid if desired)
+- Optional Phase 4 variety: hesitate, follow, different exits
 - Fallback demo video
 - Pitch: independent per-agent reasoning; scale via scheduler + batch SLM
 
@@ -133,8 +140,6 @@ Also still useful (asset / authoring)
 
 Suggested next action
 ---------------------
-Multi-agent seat walk looks good enough for now.
-Omniverse track: Phase 4 — smoke/fire volume perception + simple VFX,
-then verify Trigger Fire evacuates to Exit_A/B with perception-driven EXIT.
-SLM track: RemoteSLMDecisionEngine client in Kit; LAN connect via
-context/SLM_LAN_Connection.txt (Mac Wi‑Fi 172.19.190.197:8080).
+Phase 4 core demo is good enough (place fire → LOS/FOV evacuate).
+Omniverse track: Phase 5 debug/analytics panel, or Phase 6b
+RemoteSLMDecisionEngine client + LAN via context/SLM_LAN_Connection.txt.
