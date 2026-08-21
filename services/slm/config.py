@@ -18,8 +18,6 @@ CUDA_MODEL_ID = os.environ.get(
 BACKEND = os.environ.get("SLM_BACKEND", "mlx").strip().lower()
 HOST = os.environ.get("SLM_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SLM_PORT", "8080"))
-# AWS fleet size (identical CUDA workers behind the LB). Default 4.
-WORKERS = int(os.environ.get("SLM_WORKERS", "4"))
 TEMPERATURE = float(os.environ.get("SLM_TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.environ.get("SLM_MAX_TOKENS", "100"))
 

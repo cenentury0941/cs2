@@ -90,18 +90,11 @@ Simulation.update(dt) runs every frame while _running.
 Omniverse never tokenizes and never loads weights.
 
 
-2. Edge: load balancer (services/slm)
-------------------------------------
+2. Edge: SLM HTTP (services/slm)
+--------------------------------
 
-Client always talks to public :8080.
-
-- load_balancer.py round-robins to 127.0.0.1:8081…
-- /ready → 200 if ≥1 worker has the model
-- /v1/decide → forward full body to one ready worker
-  (whole batch stays on one GPU process; do not split one tick’s agents
-   across workers unless explicitly designed)
-
-With SLM_WORKERS=1, LB is a thin proxy to :8081.
+Client talks directly to public :8080 (`server:app` via `run_aws.py`).
+No separate load balancer; one CUDA process owns the API.
 
 
 3. SLM worker (server.py + inference_cuda.py)
@@ -128,9 +121,7 @@ Batched generate (context isolation)
   500 the whole batch
 
 Concurrency
-- One in-flight generate per worker (lock)
-- Extra workers = more concurrent batches (VRAM × N), not faster single-batch
-  decode on one L40S
+- One in-flight generate (lock); concurrent HTTP requests queue on that lock
 
 
 4. Timing / rates
@@ -156,19 +147,17 @@ MVP sim uses ≤10 agents per tick — well within limits.
 5. Sequence (one decision tick)
 -------------------------------
 
-  Kit                    LB :8080              Worker :8081
-   |                        |                       |
-   |  assemble agents[]     |                       |
-   |--- POST /v1/decide --->|                       |
-   |                        |--- POST /v1/decide -->|
-   |                        |                       | pad prompts [B,T]
-   |                        |                       | generate()
-   |                        |                       | parse → decisions[]
-   |                        |<-- 200 JSON ----------|
-   |<-- 200 JSON -----------|                       |
-   |  apply intents         |                       |
-   |  nav / USD             |                       |
-   |  (next frames: walk)   |                       |
+  Kit                         SLM :8080
+   |                              |
+   |  assemble agents[]           |
+   |--- POST /v1/decide --------->|
+   |                              | pad prompts [B,T]
+   |                              | generate()
+   |                              | parse → decisions[]
+   |<-- 200 JSON -----------------|
+   |  apply intents               |
+   |  nav / USD                   |
+   |  (next frames: walk)         |
 
 
 6. Failure / fallback
@@ -219,5 +208,5 @@ Related paths
 - source/extensions/crowd.agents/crowd/agents/ai.py
 - services/slm/server.py
 - services/slm/inference_cuda.py
-- services/slm/load_balancer.py
+- services/slm/run_aws.py
 - context/SLM_LAN_Connection.txt

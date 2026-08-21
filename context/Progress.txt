@@ -93,14 +93,14 @@ Phase 5 — Debug / analytics panel (DONE, main @ 62fd548)
   (no continuous pose spam)
 - Deferred (optional): run stats (time to seats, evac time, exit usage)
 
-Phase 6a — Hosted SLM service (DONE; Mac + fleet/CUDA updates on main)
+Phase 6a — Hosted SLM service (DONE; Mac + CUDA updates on main)
 - Standalone service under services/slm/ (outside Kit)
 - Mac: mlx-community/Phi-4-mini-instruct-4bit via mlx_lm
 - Frozen HTTP API: GET /health, GET /ready, POST /v1/decide (batch)
 - Intents only: GO_TO_SEAT | EXIT | IDLE
 - Per-agent parse/validate; one bad agent never 500s the batch
 - Windows LAN verified against Mac Wi‑Fi (see SLM_LAN_Connection.txt)
-- Worker fleet + round-robin load balancer (default 4 workers)
+- AWS: single CUDA process on :8080 (no LB); Phi-4-mini via transformers
 - CUDA /v1/decide batches agents in one forward; AWS deploy helpers
 
 
@@ -126,7 +126,6 @@ Phase 6b — Wire Kit to hosted SLM + scale
 - RemoteSLMDecisionEngine HTTP client in crowd.agents (batch /v1/decide)
 - Keep DecisionEngine.decide(agent) → intent; ~1 Hz scheduler on Kit side
 - Tiny perception JSON from sim (exits, smoke, seat known — not raw mesh)
-- Multi-instance workers + load distribution (server-side largely done in 6a)
 - AWS/Ubuntu CUDA worker behind the same HTTP contract (deploy helpers exist)
 - Laptop (4 GB VRAM) must not host the SLM
 
