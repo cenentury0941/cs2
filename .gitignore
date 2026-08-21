@@ -40,3 +40,6 @@ deps/**/user.toml
 # Local GitLab SSH material (never commit)
 gitlabSSH/
 
+# Per-agent role brief (local only)
+agent.md
+
