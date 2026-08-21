@@ -1,0 +1,223 @@
+SimulCrowd — Omniverse ↔ SLM technical flow (for Omniverse / Kit agent)
+=======================================================================
+
+Last updated: 2026-08-22
+
+Purpose
+-------
+Reference for the Omniverse/Kit coding agent. Describes how batched SLM
+decisions plug into crowd.agents without loading a model inside Kit.
+
+Frozen contract (do not change unilaterally)
+--------------------------------------------
+Intents only: GO_TO_SEAT | EXIT | IDLE
+
+POST /v1/decide — one HTTP request may contain all agents (batch).
+GET  /health    — process up
+GET  /ready     — 200 only after a worker has the model loaded
+
+See repo agent.md / services/slm for exact JSON shapes.
+
+
+End-to-end flow
+---------------
+
+  Kit update(dt)
+    → perception update (local)
+    → [decision scheduler gate ~1 Hz]
+    → POST /v1/decide  {request_id, agents[]}
+    → CUDA worker: pad + generate(batch=N)
+    → response decisions[]
+    → map id → intent/destination
+    → NavigationSystem.apply_intent / path follow
+    → USD sync
+
+
+1. Omniverse side (per simulation frame)
+----------------------------------------
+
+Simulation.update(dt) runs every frame while _running.
+
+1) Perception (local, cheap)
+   For each Agent, refresh flags such as fire_visible / at_destination from
+   FireSystem + nav state. No model involvement.
+
+2) Decision scheduler (required for SLM; not every frame)
+   Typical gate: wall-clock now - last_slm_t >= 1.0 (≈1 Hz), or every N frames.
+   Frames between ticks: skip HTTP; keep last agent.intent; NavMesh keeps moving.
+
+3) Batch assembly
+   Build one payload:
+
+   {
+     "request_id": "sim-tick-<counter>",
+     "agents": [
+       {
+         "id": "Agent_001",
+         "goal": "Seat_003",
+         "assigned_seat": "Seat_003",
+         "intent": "WALK",
+         "perception": {
+           "fire_visible": false,
+           "smoke_visible": false,
+           "seat_known": true,
+           "at_destination": false,
+           "nearest_exit": "Exit_A",
+           "exits": ["Exit_A", "Exit_B"]
+         }
+       }
+     ]
+   }
+
+   Only scalars / ids / bools. No meshes, NavMesh, or raw transforms beyond
+   what perception/goals already encode.
+
+4) Transport — RemoteSLMDecisionEngine (to implement; today RuleBased
+   DecisionEngine.decide(agent) is still per-agent every frame):
+   - GET  {base}/ready once at start (or before first tick)
+   - POST {base}/v1/decide with generous timeout (e.g. 5–30 s)
+   - On failure / timeout → fall back to RuleBasedDecisionEngine for that tick
+   - SLM_BASE_URL examples: http://127.0.0.1:8080 (SSM tunnel) or LAN IP
+
+5) Apply
+   Index decisions by id. For each agent:
+   - set high-level intent (GO_TO_SEAT / EXIT / IDLE) and destination id if present
+   - existing logic maps EXIT → exit prim, GO_TO_SEAT → seat; may demote to WALK
+     while pathing
+   - NavigationSystem.apply_intent(agent, intent, dt)
+   - separation + sync_to_usd()
+
+Omniverse never tokenizes and never loads weights.
+
+
+2. Edge: load balancer (services/slm)
+------------------------------------
+
+Client always talks to public :8080.
+
+- load_balancer.py round-robins to 127.0.0.1:8081…
+- /ready → 200 if ≥1 worker has the model
+- /v1/decide → forward full body to one ready worker
+  (whole batch stays on one GPU process; do not split one tick’s agents
+   across workers unless explicitly designed)
+
+With SLM_WORKERS=1, LB is a thin proxy to :8081.
+
+
+3. SLM worker (server.py + inference_cuda.py)
+---------------------------------------------
+
+Process lifetime
+- Uvicorn start → lifespan → CudaWorker.load() once (Phi-4-mini on CUDA).
+- /health = process up; /ready = model loaded.
+
+Request path
+  POST /v1/decide
+    → worker.decide_many(agents)
+         → _generate_many(agents)   # ONE GPU generate for the batch
+         → parse_output / fallback per row
+    → DecideResponse
+
+Batched generate (context isolation)
+- Each batch row = system prompt + build_user_prompt(that agent only)
+- tokenizer padding=True, padding_side=left → input_ids [B, T]
+- model.generate(**batch, …) under a process lock
+- Attention is within each row; batch dim does NOT share tokens across agents
+- Shared = weights + kernels only (not conversation context)
+- Invalid JSON / bad intent → per-agent rule fallback; one bad row must not
+  500 the whole batch
+
+Concurrency
+- One in-flight generate per worker (lock)
+- Extra workers = more concurrent batches (VRAM × N), not faster single-batch
+  decode on one L40S
+
+
+4. Timing / rates
+-----------------
+
+| Layer        | Rate              | Cost                    |
+|--------------|-------------------|-------------------------|
+| Kit update   | ~30–60 Hz         | nav + USD               |
+| Perception   | with update       | cheap                   |
+| SLM decide   | ~1 Hz             | one batched HTTP+GPU    |
+| GPU generate | once per tick     | scales with batch size  |
+
+High-frequency motion, low-frequency reasoning.
+
+Rough capacity on g6e L40S, 1× Phi-4-mini (measured 2026-08-22):
+- B=32  → ~2.1 s  (~15 agents/s), worker VRAM ~12–13 GB peak path
+- B=64  → ~2.8 s  (~23 agents/s)
+- B=128 → ~4.4 s  (~29 agents/s), worker VRAM ~38 GB (tight with DCV)
+
+MVP sim uses ≤10 agents per tick — well within limits.
+
+
+5. Sequence (one decision tick)
+-------------------------------
+
+  Kit                    LB :8080              Worker :8081
+   |                        |                       |
+   |  assemble agents[]     |                       |
+   |--- POST /v1/decide --->|                       |
+   |                        |--- POST /v1/decide -->|
+   |                        |                       | pad prompts [B,T]
+   |                        |                       | generate()
+   |                        |                       | parse → decisions[]
+   |                        |<-- 200 JSON ----------|
+   |<-- 200 JSON -----------|                       |
+   |  apply intents         |                       |
+   |  nav / USD             |                       |
+   |  (next frames: walk)   |                       |
+
+
+6. Failure / fallback
+---------------------
+
+| Failure              | Owner | Behavior                                      |
+|----------------------|-------|-----------------------------------------------|
+| Model not loaded     | SLM   | /ready 503; Kit waits or uses rules           |
+| HTTP timeout / 5xx   | Kit   | Rule-based tick                               |
+| One agent bad JSON   | SLM   | That agent fallback; others OK                |
+| GPU OOM on huge B    | SLM   | Request fails → Kit fallback; chunk agents[]  |
+
+
+7. Responsibility split (summary)
+---------------------------------
+
+| Concern                         | Omniverse | SLM |
+|---------------------------------|-----------|-----|
+| Scene, USD, NavMesh, VFX        | yes       | no  |
+| Perception (fire, seat, exits)  | yes       | no  |
+| Scheduler (~1 Hz batch)         | yes       | no  |
+| Build agents[] / apply intents  | yes       | no  |
+| Path / collision / animation    | yes       | no  |
+| Next high-level intent          | asks      | yes |
+| Waypoints / mesh / coordinates  | yes       | never |
+
+Kit = world + schedule + apply.
+SLM = stateless batched intent inference.
+
+
+8. Implementation note for Kit agent
+------------------------------------
+
+Today (simulation.py): per-agent RuleBasedDecisionEngine.decide(agent) every frame.
+
+Target:
+- Add RemoteSLMDecisionEngine with decide_batch(agents) -> list[Decision]
+  (or assemble payload in Simulation and POST directly)
+- Gate on ~1 Hz timer
+- Keep RuleBasedDecisionEngine as fallback
+- Do not call one HTTP request per agent
+- Do not import mlx/torch/transformers into the Kit extension
+
+
+Related paths
+-------------
+- source/extensions/crowd.agents/crowd/agents/simulation.py
+- source/extensions/crowd.agents/crowd/agents/ai.py
+- services/slm/server.py
+- services/slm/inference_cuda.py
+- services/slm/load_balancer.py
+- context/SLM_LAN_Connection.txt

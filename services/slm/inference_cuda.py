@@ -141,19 +141,30 @@ class CudaWorker:
         )
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
         prompt_len = inputs["input_ids"].shape[-1]
+        # Tiny JSON intents; keep this low so the batch isn't held by a long tail.
+        max_new = min(MAX_TOKENS, int(os.environ.get("SLM_BATCH_MAX_NEW", "48")))
 
         gen_kwargs = {
-            "max_new_tokens": MAX_TOKENS,
+            "max_new_tokens": max_new,
             "do_sample": TEMPERATURE > 0,
             "pad_token_id": self._tokenizer.pad_token_id,
             "eos_token_id": self._tokenizer.eos_token_id,
+            # Prefer stopping once the JSON object closes (transformers>=4.42).
+            "stop_strings": ["}"],
+            "tokenizer": self._tokenizer,
         }
         if TEMPERATURE > 0:
             gen_kwargs["temperature"] = TEMPERATURE
 
         with self._lock:
             with torch.inference_mode():
-                output_ids = self._model.generate(**inputs, **gen_kwargs)
+                try:
+                    output_ids = self._model.generate(**inputs, **gen_kwargs)
+                except TypeError:
+                    # Older transformers without stop_strings
+                    gen_kwargs.pop("stop_strings", None)
+                    gen_kwargs.pop("tokenizer", None)
+                    output_ids = self._model.generate(**inputs, **gen_kwargs)
 
         texts: List[str] = []
         for i in range(output_ids.shape[0]):
