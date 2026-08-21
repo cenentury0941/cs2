@@ -2,13 +2,14 @@ SimulCrowd — Progress
 =====================
 
 Last updated: 2026-08-21
-Branch: feature/simulcrowd-phase1
-Remote: https://github.com/cenentury0941/cs.git (remote name: cs)
+Branch: main
+Primary remote: git@gitlab.presidio.com:rakhulkr/simulcrowd.git (origin)
+Also: https://github.com/cenentury0941/cs.git (cs) — historical feature branch pushes
 
 Goal
 ----
 NVIDIA Omniverse/Kit app (SimulCrowd) that loads a venue (GLB→USD),
-runs 5–10 intent-driven agents on a NavMesh, demonstrates fire
+runs intent-driven agents on a NavMesh, demonstrates fire
 evacuation from perception, and later swaps rule-based decisions for
 batched SLM inference.
 
@@ -27,7 +28,7 @@ Phase 1 — Extension scaffold
 - Custom extension crowd.agents created and enabled in crowd.sim.kit
 - Modules in place:
   extension.py, ui.py, simulation.py, agent.py,
-  navigation.py, fire.py, ai.py, scene.py
+  navigation.py, fire.py, ai.py, scene.py, layout.py
 - Crowd Agents control panel (Open Venue, smoke-test cube, sim buttons)
 - USD smoke test: Spawn Cube / Move Cube +1m
 - DecisionEngine interface with RuleBasedDecisionEngine stub
@@ -43,16 +44,29 @@ Phase 2 — NavMesh + one walking agent (DONE)
 - Fixes: ground clipping (feet vs capsule center); zero-dt update stall
 - Verified in-app: agent moves on the test plane
 
-Phase 3 — Multiple agents + seats (DONE in code)
+Phase 3 — Multiple agents + seats (DONE)
 - scene.py discovers:
-  - Spawn plane → horizontal spawn bounds (X/Y if Z-up)
-  - Seat_000 … Seat_024 planes
+  - Spawn plane → random placement in mesh local X/Y; feet on NavMesh
+  - Seat_001 … Seat_100 (underscore naming; also accepts Seat.XXX)
   - Exit_A / Exit_B empties
-- Spawn Agents (default 8, max 10): positions only inside Spawn,
-  each assigned a unique Seat_XXX, paths planned on Run
+- Spawn Agents slider 1–100; unique random seats; paths planned on Run
 - Re-assign Seats without respawning
 - Trigger Fire → nearest Exit_A/B (VFX still stub; Phase 4)
 - Status shows seated / walking counts
+- Agent–agent separation (simple pairwise); seated/arrived agents ignored
+- Update dt fallback (1/30) if Kit omits dt
+
+Phase 3b — Crowd pathing polish (DONE, on main)
+- Corridor lane jitter: per-agent lane_bias, lateral offset capped by
+  NavMesh bake agent radius (no side-probe corridor width — that hung)
+- Skip overshot waypoints so crowding does not force backtracking
+- Replan ~1/s when closing on the *current waypoint* is too slow
+  (not Euclidean seat distance — that caused mass-replan FPS collapse)
+- Replan dt capped so a hitch cannot force every agent to replan next frame
+- Startup UI layout: Agent Info | Viewport | Stage/Render/Property + Crowd Sim
+- Convert Nav_XXX / Nav.XXX markers → NavMesh Include Volumes under
+  /World/NavVolumes (pose/size from mesh local bbox × transform)
+- Latest push: origin/main @ 6191007
 
 
 Repo / tooling notes
@@ -60,11 +74,12 @@ Repo / tooling notes
 - App: source/apps/crowd.sim.kit
 - Extension: source/extensions/crowd.agents/
 - Context: Progress.txt, Crowd_Simulation_Project_Notes.txt
+- Agent brief: agent.md (Omniverse vs SLM labour split; gitignored locally)
 - Scene naming contract for tests:
   - Spawn (plane)
-  - Seat_000 … Seat_024 (planes)
+  - Seat_001 … Seat_100 (planes; underscore preferred)
   - Exit_A, Exit_B (empties)
-- Pushed historically to cs/feature/simulcrowd-phase1
+  - Nav_001 / Nav.001 … → Include Volumes under NavVolumes
 
 
 Pending
@@ -101,6 +116,6 @@ Also still useful (asset / authoring)
 
 Suggested next action
 ---------------------
-In SimulCrowd: Generate NavMesh → Spawn Agents → Run.
-Confirm agents appear only on Spawn and walk to Seat_XXX.
-Then Phase 4: smoke volume perception + VFX.
+Multi-agent seat walk looks good enough for now.
+Next: Phase 4 — smoke/fire volume perception + simple VFX,
+then verify Trigger Fire evacuates to Exit_A/B with perception-driven EXIT.
