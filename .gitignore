@@ -36,3 +36,7 @@ deps/**/user.toml
 
 # Streaming EventTrace
 *.etli
+
+# Local GitLab SSH material (never commit)
+gitlabSSH/
+

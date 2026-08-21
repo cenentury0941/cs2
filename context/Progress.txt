@@ -1,0 +1,106 @@
+SimulCrowd — Progress
+=====================
+
+Last updated: 2026-08-21
+Branch: feature/simulcrowd-phase1
+Remote: https://github.com/cenentury0941/cs.git (remote name: cs)
+
+Goal
+----
+NVIDIA Omniverse/Kit app (SimulCrowd) that loads a venue (GLB→USD),
+runs 5–10 intent-driven agents on a NavMesh, demonstrates fire
+evacuation from perception, and later swaps rule-based decisions for
+batched SLM inference.
+
+
+Completed
+---------
+
+Phase 0 — Environment
+- Kit App Template project created (SimulCrowd / crowd.sim.kit)
+- Build path issues resolved (spaces in path)
+- NVIDIA driver updated; RTX 3050 laptop runs the app
+- Viewport rate-limited to 30 FPS (main / present / rendering_0 loops)
+- Venue GLB imported and converted to USD successfully
+
+Phase 1 — Extension scaffold
+- Custom extension crowd.agents created and enabled in crowd.sim.kit
+- Modules in place:
+  extension.py, ui.py, simulation.py, agent.py,
+  navigation.py, fire.py, ai.py, scene.py
+- Crowd Agents control panel (Open Venue, smoke-test cube, sim buttons)
+- USD smoke test: Spawn Cube / Move Cube +1m
+- DecisionEngine interface with RuleBasedDecisionEngine stub
+- FireSystem stub (global flag only)
+
+Phase 2 — NavMesh + one walking agent (DONE)
+- omni.anim.navigation.bundle added to the app
+- Manual NavMesh Include Volume + cyan walkable bake verified
+- Generate NavMesh (API bake via omni.anim.navigation.core)
+- Spawn Agent (capsule; feet on NavMesh, visual center lifted)
+- Set Random Destination (shortest-path waypoints)
+- Run / Pause / Reset — agent walks along path
+- Fixes: ground clipping (feet vs capsule center); zero-dt update stall
+- Verified in-app: agent moves on the test plane
+
+Phase 3 — Multiple agents + seats (DONE in code)
+- scene.py discovers:
+  - Spawn plane → horizontal spawn bounds (X/Y if Z-up)
+  - Seat_000 … Seat_024 planes
+  - Exit_A / Exit_B empties
+- Spawn Agents (default 8, max 10): positions only inside Spawn,
+  each assigned a unique Seat_XXX, paths planned on Run
+- Re-assign Seats without respawning
+- Trigger Fire → nearest Exit_A/B (VFX still stub; Phase 4)
+- Status shows seated / walking counts
+
+
+Repo / tooling notes
+--------------------
+- App: source/apps/crowd.sim.kit
+- Extension: source/extensions/crowd.agents/
+- Context: Progress.txt, Crowd_Simulation_Project_Notes.txt
+- Scene naming contract for tests:
+  - Spawn (plane)
+  - Seat_000 … Seat_024 (planes)
+  - Exit_A, Exit_B (empties)
+- Pushed historically to cs/feature/simulcrowd-phase1
+
+
+Pending
+-------
+
+Phase 4 — Fire + perception (rule-based)
+- Fire trigger with simple VFX / smoke volume (not real CFD)
+- Perception: fire_visible / smoke_visible from volume overlap
+  (not only global flag)
+- Optional variety: hesitate, follow nearby agent, pick different exits
+
+Phase 5 — Debug / analytics panel
+- Per-agent: id, intent, goal, fire perceived, exit chosen
+- Run stats: time to seats, evacuation time, exit usage
+- Decision log (last N events)
+
+Phase 6 — SLM decision engine
+- Keep DecisionEngine.decide(agent_state) → Intent contract
+- RemoteSLMDecisionEngine (HTTP/WebSocket) on Mac or cloud GPU
+- Batched inference (not one process per agent)
+- Tiny perception JSON (exits, smoke, seat known — not raw mesh)
+- Laptop (4 GB VRAM) should not host the SLM
+
+Phase 7 — Hackathon deploy + polish
+- Deploy same extension + assets to AWS g6e.xlarge or NVIDIA Brev
+- Camera / lighting / fire VFX polish
+- Fallback demo video
+- Pitch: independent per-agent reasoning; scale via scheduler + batch SLM
+
+Also still useful (asset / authoring)
+- Prefer USD working assets under assets/; keep dense scan as Visual only
+- Bake NavMesh only from Include Volume around walkable geometry
+
+
+Suggested next action
+---------------------
+In SimulCrowd: Generate NavMesh → Spawn Agents → Run.
+Confirm agents appear only on Spawn and walk to Seat_XXX.
+Then Phase 4: smoke volume perception + VFX.

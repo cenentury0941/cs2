@@ -1,0 +1,90 @@
+Crowd Simulation Project Notes
+
+Project
+
+Develop an NVIDIA Omniverse/Kit application that loads a venue model
+(GLB -> USD), simulates 5-10 agents navigating based on intent, and
+demonstrates reactions to a simple fire event. The long-term goal is
+scalable SLM-driven crowd simulation.
+
+MVP
+
+-   Single venue
+-   5-10 agents
+-   Assigned seats
+-   NavMesh navigation
+-   Fire trigger
+-   Agents evacuate based on perception
+-   Debug/analytics panel
+
+Architecture
+
+Kit Base Editor + custom extension.
+
+Modules: - extension.py - ui.py - simulation.py - navigation.py -
+fire.py - ai.py - agent.py
+
+Simulation Loop
+
+Simulation.update() -> Agent.update() -> Decision Engine -> Navigation
+-> Update USD transforms
+
+Decision Engine
+
+Initial: - Rule-based decisions
+
+Later: - Replace with SLM implementation using same interface.
+
+Recommended App Workflow
+
+File -> Open Venue Generate NavMesh Spawn Agents Run Simulation Trigger
+Fire Observe Agent Behaviour
+
+Project Layout
+
+crowd-sim/ source/ apps/ crowd.sim/ extensions/ crowd.agents/ assets/
+venue.usd
+
+Hardware
+
+Local: - RTX 3050 Laptop (4GB VRAM, 32GB RAM) - MacBook Pro M2 (16GB
+RAM)
+
+Suggested split: Laptop: - Omniverse Kit - Rendering - Navigation -
+Simulation
+
+Mac: - SLM inference service - HTTP/WebSocket API
+
+Hackathon Cloud
+
+-   AWS g6e.xlarge (L40S) or NVIDIA Brev instance
+-   Deploy same extension
+-   Scale inference there
+
+Development Roadmap
+
+1.  Import venue
+2.  Convert GLB to USD
+3.  Generate NavMesh
+4.  Spawn one agent
+5.  Walking
+6.  Multiple agents
+7.  Fire trigger
+8.  Rule-based AI
+9.  Replace with SLM
+
+Current Status
+
+-   Kit project created
+-   Build path issue resolved (spaces in path)
+-   NVIDIA driver issue resolved (Phase 0)
+-   Venue imported successfully
+-   crowd.agents extension scaffolded (Phase 1)
+-   Control panel + USD spawn/move cube smoke test
+-   NavMesh bundle enabled; cyan walkable bake verified
+-   Phase 2: single agent path-follow verified
+-   Phase 3: Spawn bounds + Seat_000–024 + Exit_A/B multi-agent
+
+Next Step
+
+Phase 4 — fire VFX + volume-based perception (exits already wired).
