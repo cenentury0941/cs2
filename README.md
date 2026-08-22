@@ -54,8 +54,9 @@ to plan, simulate, and review crowd scenarios — not a one-off consumer app.
 
 ### How packaging could look
 
-- **Team** — small venues / planners: limited seats, a few venues, rule-based sims
-- **Professional** — event and safety firms: more projects, hosted AI, scenario packs
+- **Team** — small venues / planners: limited seats, a few venues, hosted AI
+- **Professional** — event and safety firms: more projects, higher AI capacity,
+  scenario packs
 - **Enterprise** — operators and agencies: SSO, private cloud / on-prem AI, audit
   exports, training workshops
 
@@ -75,8 +76,8 @@ GPU inference, white-label demos for client pitches.
   start evacuating
 - **Inspect anyone** — click a person to see what they are doing, where they
   are going, and what they have noticed
-- **Compare decisions** — use simple rules, or optional AI that decides
-  per-person whether to stay seated, go to a seat, or exit
+- **AI-driven decisions** — each person chooses whether to stay seated, go to
+  a seat, or exit based on what they have seen
 
 ## How it works (in plain terms)
 
@@ -88,7 +89,7 @@ GPU inference, white-label demos for client pitches.
   │  SimulCrowd (Omniverse)    │  ← people walk, see hazards, evacuate
   │  Crowd simulation + UI     │
   └─────────────┬──────────────┘
-                │  optional: ask AI what each person should do next
+                │  ask AI what each person should do next
                 ▼
   ┌────────────────────────────┐
   │  AI decision service       │  ← runs separately (laptop GPU or cloud)
@@ -97,17 +98,17 @@ GPU inference, white-label demos for client pitches.
 
 1. **The 3D app** owns the venue, movement, vision (who can see fire/smoke),
    and the operator controls.
-2. **Decisions** — sit / walk to seat / exit — can come from built-in rules or
-   from a small language model that reasons about each person’s situation.
-3. If the AI service is offline, simulation continues with the rule engine so
-   demos and planning sessions are not blocked.
+2. **Decisions** — sit / walk to seat / exit — come from a small language
+   model that reasons about each person’s situation.
+3. If the AI service is briefly offline, a rule engine keeps the simulation
+   running so demos and planning sessions are not blocked.
 
-You do not need to understand the networking details to use the product; the
-Crowd Sim panel has **Use hosted SLM** when you want AI-driven behaviour.
+Enable **Use hosted SLM** in the Crowd Sim panel to connect the AI service.
+You do not need to understand the networking details to use the product.
 
 ## AI in SimulCrowd
 
-AI is optional. When enabled, it supports the use cases above by giving each
+AI drives per-person behaviour and supports the use cases above by giving each
 simulated person a more human-like choice under pressure:
 
 - **Per-person decisions** — go to seat, exit, or wait — based on what that
@@ -125,7 +126,7 @@ Technical setup for the AI service lives in [`services/slm/README.md`](services/
 |------|---------|
 | `source/apps/crowd.sim.kit` | SimulCrowd application |
 | `source/extensions/crowd.agents/` | Crowd simulation, UI, fire, AI client |
-| `services/slm/` | Optional AI decision / summary service |
+| `services/slm/` | AI decision / summary service |
 | `images/` | README screenshots |
 | `context/` | Connection and project notes |
 | `templates/` | Upstream Omniverse templates |
@@ -140,8 +141,8 @@ Technical setup for the AI service lives in [`services/slm/README.md`](services/
   [Windows developer configuration](readme-assets/additional-docs/windows_developer_configuration.md)
   if building C++ on Windows)
 
-The optional AI service can also run on Apple Silicon; the Omniverse app itself
-needs a Windows or Linux NVIDIA machine.
+The AI service can also run on Apple Silicon; the Omniverse app itself needs a
+Windows or Linux NVIDIA machine.
 
 ## Quick start
 
@@ -176,19 +177,19 @@ while shaders compile.
 
 In the Crowd Sim panel:
 
-1. **Open Venue** → **Generate NavMesh** → **Spawn Agents**
-2. Click a person to inspect them
-3. **Run** — people walk to seats (normal event flow)
-4. **Start Fire** — place a hazard and watch who evacuates and where
-5. Optionally enable **Use hosted SLM** for AI-driven choices, then Run again
+1. Start the AI service (see below), then enable **Use hosted SLM**
+2. **Open Venue** → **Generate NavMesh** → **Spawn Agents**
+3. Click a person to inspect them
+4. **Run** — people walk to seats (normal event flow)
+5. **Start Fire** — place a hazard and watch who evacuates and where
 
 For custom venues, name seats, exits, and walkable areas consistently
 (`Seat_001`…, `Exit_A` / `Exit_B`, spawn plane, nav volumes). Details are in
 the extension docs linked below.
 
-## Optional AI service
+## AI service
 
-Rules work out of the box. For AI-backed decisions:
+Run the decision service before a planning session:
 
 ```bash
 cd services/slm
