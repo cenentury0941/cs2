@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="images/venue-overview.jpeg" alt="SimulCrowd with a loaded venue layout and Crowd Sim controls" width="100%" />
+</p>
+<p align="center"><em>Load a real venue, spawn a crowd, and plan seating and exits in 3D.</em></p>
+
 # SimulCrowd
 
 SimulCrowd helps you **see how crowds of people move through a space** — seating,
@@ -19,6 +24,11 @@ Built on NVIDIA Omniverse / Kit.
 
 The goal is to answer questions like: *Will people reach seats smoothly? If
 there is a fire, do they evacuate in time? Which layout is safer?*
+
+<p align="center">
+  <img src="images/evacuation-simulation.jpeg" alt="SimulCrowd fire evacuation with agents moving to exits and Individual Agent Info" width="100%" />
+</p>
+<p align="center"><em>During a fire scenario: who sees the hazard, who evacuates, and what each person is doing.</em></p>
 
 ## What you can do
 
@@ -79,6 +89,7 @@ Technical setup for the AI service lives in [`services/slm/README.md`](services/
 | `source/apps/crowd.sim.kit` | SimulCrowd application |
 | `source/extensions/crowd.agents/` | Crowd simulation, UI, fire, AI client |
 | `services/slm/` | Optional AI decision / summary service |
+| `images/` | README screenshots |
 | `context/` | Connection and project notes |
 | `templates/` | Upstream Omniverse templates |
 | `tools/` | Build / repo tooling |
