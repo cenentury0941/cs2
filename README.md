@@ -1,304 +1,186 @@
-# Omniverse Kit App Template
+# SimulCrowd
 
-<p align="center">
-  <img src="readme-assets/kit_app_template_banner.png" width=100% />
-</p>
+NVIDIA Omniverse / Kit application for intent-driven venue crowd simulation.
+Agents walk a NavMesh to seats, perceive fire and smoke, and evacuate through
+exits. High-level decisions can come from a local rule engine or a hosted
+small language model (SLM) over HTTP — Omniverse never loads model weights.
 
-## :memo: Feature Branch Information
-**This repository is based on a Feature Branch of the Omniverse Kit SDK.** Feature Branches are regularly updated and best suited for testing and prototyping.
-For stable, production-oriented development, please use the [Production Branch of the Kit SDK on NVIDIA GPU Cloud (NGC)](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/omniverse/collections/omniverse_26h1).
+Built on the Omniverse Kit App Template / Kit Base Editor stack.
 
-[Omniverse Release Information](https://docs.omniverse.nvidia.com/dev-overview/latest/omniverse-releases.html#)
+## Features
 
+**Venue & navigation**
+- Import venue geometry (GLB → USD) and bake a walkable NavMesh
+- Scene contract: spawn plane, numbered seats, exits, and Nav include volumes
+- Spawn 1–100 agents with unique seat assignment and path planning on Run
+- Corridor lane jitter, waypoint skip/replan, and simple agent–agent separation
 
-## Overview
+**Perception & evacuation**
+- Place a fire trigger in the viewport (hover preview, click-to-place)
+- Per-agent FOV / range / mesh line-of-sight for fire and smoke (sticky once seen)
+- Intent switch to EXIT only for agents that actually perceive the hazard
+- Debug colors: blue toward seat, red toward exit
 
-Welcome to `kit-app-template`, a toolkit designed for developers interested in GPU-accelerated application development within the NVIDIA Omniverse ecosystem. This repository offers streamlined tools and templates to simplify creating high-performance, OpenUSD-based desktop or cloud streaming applications using the Omniverse Kit SDK.
+**Operator tools**
+- Crowd Sim control panel (open venue, NavMesh, spawn, run/pause/reset, fire, SLM)
+- Click/hover inspect for Individual Agent Info (intent, goal, seat, exit,
+  fire/smoke, position, waypoints)
+- Selected-agent FOV wireframe and state-change event log for the run
 
-### About Omniverse Kit SDK
+**AI / decisioning**
+- Pluggable decision engines: rule-based (default) or remote SLM
+- Batched HTTP intents with fallback to rules if the SLM is down
+- Optional natural-language agent summaries (OpenRouter or local model)
 
-The Omniverse Kit SDK enables developers to build immersive 3D applications. Key features include:
-- **Language Support:** Develop with either Python or C++, offering flexibility for various developer preferences.
-- **OpenUSD Foundation:** Utilize the robust Open Universal Scene Description (OpenUSD) for creating, manipulating, and rendering rich 3D content.
-- **GPU Acceleration:** Leverage GPU-accelerated capabilities for high-fidelity visualization and simulation.
-- **Extensibility:** Create specialized extensions that provide dynamic user interfaces, integrate with various systems, and offer direct control over OpenUSD data, making the Omniverse Kit SDK versatile for numerous applications.
+## Architecture
 
-### Applications and Use Cases
+SimulCrowd splits **simulation** (inside Kit) from **inference** (outside Kit):
 
-The `kit-app-template` repository enables developers to create cross-platform applications (Windows and Linux) optimized for desktop use and cloud streaming. Potential use cases include designing and simulating expansive virtual environments, producing high-quality synthetic data for AI training, and building advanced tools for technical analysis and insights. Whether you're crafting engaging virtual worlds, developing comprehensive analysis tools, or creating simulations, this repository, along with the Kit SDK, provides the foundational components required to begin development.
-
-### A Deeper Understanding
-
-The `kit-app-template` repository is designed to abstract complexity, jumpstarting your development with pre-configured templates, tools, and essential boilerplate. For those seeking a deeper understanding of the application and extension creation process, we have provided the following resources:
-
-#### Companion Tutorial
-
-**[Explore the Kit SDK Companion Tutorial](https://docs.omniverse.nvidia.com/kit/docs/kit-app-template/latest/docs/intro.html)**: This tutorial offers detailed insights into the underlying structure and mechanisms, providing a thorough grasp of both the Kit SDK and the development process.
-
-### New Developers
-
-For a beginner-friendly introduction to application development using the Omniverse Kit SDK, see the NVIDIA DLI course:
-
-#### Beginner Tutorial
-
-**[Developing an Omniverse Kit-Based Application](https://learn.nvidia.com/courses/course-detail?course_id=course-v1:DLI+S-OV-11+V1)**: This course offers an accessible introduction to application development (account and login required).
-
-These resources empower developers at all experience levels to fully utilize the `kit-app-template` repository and the Omniverse Kit SDK.
-
-## Table of Contents
-- [Overview](#overview)
-- [Prerequisites and Environment Setup](#prerequisites-and-environment-setup)
-- [Repository Structure](#repository-structure)
-- [Quick Start](#quick-start)
-- [Templates](#templates)
-    - [Applications](#applications)
-    - [Extensions](#extensions)
-- [Tools](#tools)
-- [License](#license)
-- [Additional Resources](#additional-resources)
-- [Contributing](#contributing)
-
-## Prerequisites and Environment Setup
-
-Ensure your system is set up with the following to work with Omniverse Applications and Extensions:
-
-- **Operating System**: Windows 10/11 or Linux (Ubuntu 22.04 or newer)
-
-- **GPU**: NVIDIA RTX capable GPU (RTX 3070 or Better recommended)
-
-- **Driver**: Minimum and recommended - This update requires driver version >=550.54.15 (Linux) or >=551.78 (Windows). Please verify your driver versions before upgrading. Newer versions may work but are not equally validated.
-
-- **Internet Access**: Required for downloading the Omniverse Kit SDK, extensions, and tools.
-
-### Required Software Dependencies
-
-- [**Git**](https://git-scm.com/downloads): For version control and repository management
-
-- **(Windows - C++ Only) Microsoft Visual Studio (2019 or 2022)**: You can install the latest version from [Visual Studio Downloads](https://visualstudio.microsoft.com/downloads/). Ensure that the **Desktop development with C++** workload is selected.  [Additional information on Windows development configuration](readme-assets/additional-docs/windows_developer_configuration.md)
-
-- **(Windows - C++ Only) Windows SDK**: Install this alongside MSVC. You can find it as part of the Visual Studio Installer. [Additional information on Windows development configuration](readme-assets/additional-docs/windows_developer_configuration.md)
-
-- **(Linux) build-essentials**: A package that includes `make` and other essential tools for building applications.  For Ubuntu, install with `sudo apt-get install build-essential`
-
-### Recommended Software
-
-- [**(Linux) Docker**](https://docs.docker.com/engine/install/ubuntu/): For containerized development and deployment. **Ensure non-root users have Docker permissions.**
-
-- [**(Linux) NVIDIA Container Toolkit**](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html): For GPU-accelerated containerized development and deployment. **Installation and Configuring Docker steps are required.**
-
-- [**VSCode**](https://code.visualstudio.com/download) (or your preferred IDE): For code editing and development
-
-
-## Repository Structure
-
-| Directory Item   | Purpose                                                    |
-|------------------|------------------------------------------------------------|
-| .vscode          | VS Code configuration details and helper tasks             |
-| readme-assets/   | Images and additional repository documentation             |
-| templates/       | Template Applications and Extensions.                      |
-| tools/           | Tooling settings and repository specific (local) tools     |
-| .editorconfig    | [EditorConfig](https://editorconfig.org/) file.            |
-| .gitattributes   | Git configuration.                                         |
-| .gitignore       | Git configuration.                                         |
-| LICENSE          | License for the repo.                                      |
-| README.md        | Project information.                                       |
-| premake5.lua     | Build configuration - such as what apps to build.          |
-| repo.bat         | Windows repo tool entry point.                             |
-| repo.sh          | Linux repo tool entry point.                               |
-| repo.toml        | Top level configuration of repo tools.                     |
-| repo_tools.toml  | Setup of local, repository specific tools                  |
-
-## Quick Start
-
-This section guides you through creating your first Kit SDK-based Application using the `kit-app-template` repository. For a more comprehensive explanation of functionality previewed here, reference the following [Tutorial](https://docs.omniverse.nvidia.com/kit/docs/kit-app-template/latest/docs/intro.html) for an in-depth exploration.
-
-### 1. Clone the Repository
-
-Begin by cloning the `kit-app-template` to your local workspace:
-
-#### 1a. Clone
-
-```bash
-git clone https://github.com/NVIDIA-Omniverse/kit-app-template.git
+```text
+┌─────────────────────────────────────────────────────────┐
+│  Omniverse Kit — SimulCrowd (crowd.sim.kit)             │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  crowd.agents                                     │  │
+│  │  · Perception (FOV / LOS / sticky memory)         │  │
+│  │  · DecisionEngine (rules  or  RemoteSLM client)   │  │
+│  │  · Navigation (NavMesh paths, separation, USD)    │  │
+│  │  · Fire + UI / agent inspect                      │  │
+│  └───────────────────────┬───────────────────────────┘  │
+└──────────────────────────┼──────────────────────────────┘
+                           │  HTTP  /v1/decide  (batch)
+                           │  HTTP  /v1/summarize
+                           ▼
+┌─────────────────────────────────────────────────────────┐
+│  services/slm  (standalone process)                     │
+│  Mac: mlx-lm (Phi-4-mini)  ·  AWS: CUDA transformers    │
+│  Optional: OpenRouter for /v1/summarize                 │
+└─────────────────────────────────────────────────────────┘
 ```
 
-#### 1b. Navigate to Cloned Directory
+**Per-frame loop (Kit):** perception updates locally every frame → navigation
+follows the current intent → decisions are gated (not every frame when using
+SLM). Between SLM ticks, agents keep the last intent while NavMesh motion
+continues.
 
-```bash
-cd kit-app-template
-```
+**Labour split:** Kit owns scene, perception scalars, pathing, and USD sync.
+The SLM receives compact per-agent JSON (ids, bools, goals — no meshes) and
+returns only high-level intents. On timeout or `/ready` failure, Kit falls
+back to `RuleBasedDecisionEngine`.
 
-### 2. Create and Configure New Application From Template
+## AI features
 
-Run the following command to initiate the configuration wizard:
+| Capability | How it works |
+|------------|--------------|
+| **Rule-based decisions** | Local engine in `crowd.agents`; default when SLM is off or unreachable |
+| **Hosted SLM decisions** | `POST /v1/decide` batches agents; model chooses `GO_TO_SEAT`, `EXIT`, or `IDLE` from perception + goals |
+| **Perception-driven prompts** | Decides fire on perception *changes* (and batch size), not a blind all-agents poll every frame |
+| **Safe batching** | One bad agent parse never fails the whole batch; soft/hard motion throttle under SLM backlog |
+| **Agent summaries** | `POST /v1/summarize` turns an Agent Info snapshot + events into operator-facing narrative (OpenRouter when configured, else local Phi) |
+| **Deploy options** | Mac Apple Silicon via mlx-lm, or AWS Ubuntu CUDA (`Phi-4-mini`); LAN or SSM port-forward to Windows Kit |
 
-**Linux:**
-```bash
-./repo.sh template new
-```
+Allowed intents are frozen: **`GO_TO_SEAT`**, **`EXIT`**, **`IDLE`**. See
+`services/slm/README.md` and `context/Omniverse_SLM_Technical_Flow.txt` for
+the HTTP contract and end-to-end flow.
 
-**Windows:**
-```powershell
-.\repo.bat template new
-```
+## Repository layout
 
-> **NOTE:** If this is your first time running the `template new` tool, you'll be prompted to accept the Omniverse Licensing Terms.
+| Path | Purpose |
+|------|---------|
+| `source/apps/crowd.sim.kit` | SimulCrowd Kit application |
+| `source/extensions/crowd.agents/` | Crowd sim extension (UI, NavMesh, fire, SLM client) |
+| `services/slm/` | Standalone HTTP SLM inference (Mac mlx / AWS CUDA) |
+| `context/` | Setup notes (LAN SLM, Omniverse↔SLM flow, progress) |
+| `templates/` | Upstream Kit app/extension templates (scaffolding) |
+| `tools/` | Repo tooling |
 
-Follow the prompt instructions:
-- **? Select what you want to create with arrow keys ↑↓:** Application
-- **? Select desired template with arrow keys ↑↓:** Kit Base Editor
-- **? Enter name of application .kit file [name-spaced, lowercase, alphanumeric]:** [set application name]
-- **? Enter application_display_name:** [set application display name]
-- **? Enter version:** [set application version]
+## Prerequisites
 
-  Application [application name] created successfully in [path to project]/source/apps/[application name]
+- **OS:** Windows 10/11 or Linux (Ubuntu 22.04+)
+- **GPU:** NVIDIA RTX (3070 or better recommended)
+- **Driver:** ≥550.54.15 (Linux) or ≥551.78 (Windows)
+- **Git**, and the usual Kit SDK toolchain (see
+  [Windows developer configuration](readme-assets/additional-docs/windows_developer_configuration.md)
+  if building C++ on Windows)
 
-- **? Do you want to add application layers?** No
+Apple Silicon is used only for the optional Mac SLM service (`services/slm`),
+not for running the Omniverse app.
 
-#### Explanation of Example Selections
+## Quick start
 
-• **`.kit` file name:** This file defines the application according to Kit SDK guidelines. The file name should be lowercase and alphanumeric to remain compatible with Kit’s conventions.
-
-• **display name:** This is the application name users will see. It can be any descriptive text.
-
-• **version:** The version number of the application. While you can use any format, semantic versioning (e.g., 0.1.0) is recommended for clarity and consistency.
-
-• **application layers:** These optional layers add functionality for features such as streaming to web browsers. For this quick-start, we skip adding layers, but choosing “yes” would let you enable and configure streaming capabilities.
-
-### 3. Build
-
-Build your new application with the following command:
-
+### Build
 
 **Linux:**
 ```bash
 ./repo.sh build
 ```
+
 **Windows:**
 ```powershell
 .\repo.bat build
- ```
-
-A successful build will result in the following message:
-
-```text
-BUILD (RELEASE) SUCCEEDED (Took XX.XX seconds)
 ```
 
- If you experience issues related to build, please see the [Usage and Troubleshooting](readme-assets/additional-docs/usage_and_troubleshooting.md) section for additional information.
-
-
-### 4. Launch
-
-Initiate your newly created application using:
+### Launch
 
 **Linux:**
 ```bash
 ./repo.sh launch
 ```
+
 **Windows:**
 ```powershell
 .\repo.bat launch
 ```
 
-**? Select with arrow keys which App would you like to launch:** [Select the created editor application]
+Select **SimulCrowd** / `crowd.sim`. First startup can take several minutes
+while shaders compile.
 
-![Kit Base Editor Image](readme-assets/kit_base_editor.png)
+### Typical workflow
 
+In the Crowd Sim panel:
 
-> **NOTE:** The initial startup may take 5 to 8 minutes as shaders compile for the first time. After initial shader compilation, startup time will reduce dramatically
+1. **Open Venue** → **Generate NavMesh** → **Spawn Agents**
+2. Click an agent to inspect state
+3. **Run** → agents walk to seats
+4. **Start Fire** (click to place) → agents that see fire/smoke exit
+5. Optionally enable **Use hosted SLM**, set the base URL, **Check Ready**, then Run
 
-## Templates
+Scene naming for venues:
 
-`kit-app-template` features an array of configurable templates for `Extensions` and `Applications`, catering to a range of desired development starting points from minimal to feature rich.
+- `Spawn` — spawn plane
+- `Seat_001` … `Seat_100` — seat planes
+- `Exit_A`, `Exit_B` — exits
+- `Nav_001` / `Nav.001` … — converted to NavMesh include volumes
 
-### Applications
+## Hosted SLM (optional)
 
-Begin constructing Omniverse Applications using these templates
+Decisions stay in Kit by default (rule-based). For SLM-backed intents, run the
+standalone service and point the Crowd Sim panel at it:
 
-- **[Kit Service](./templates/apps/kit_service)**: The minimal definition of an Omniverse Kit SDK based service. This template is useful for creating headless services leveraging Omniverse Kit functionality.
+```bash
+cd services/slm
+# see services/slm/README.md for Mac (mlx) or AWS (CUDA) setup
+```
 
-- **[Kit Base Editor](./templates/apps/kit_base_editor/)**: A minimal template application for loading, manipulating and rendering OpenUSD content from a graphical interface.
+Contract: `GET /health`, `GET /ready`, `POST /v1/decide`, `POST /v1/summarize`.
+LAN wiring notes: `context/SLM_LAN_Connection.txt`.
 
-- **[USD Composer](./templates/apps/usd_composer)**: A template application for authoring complex OpenUSD scenes, such as configurators.
+## Extension docs
 
-- **[USD Explorer](./templates/apps/usd_explorer)**: A template application for exploring and collaborating on large Open USD scenes.
+- [crowd.agents overview](source/extensions/crowd.agents/docs/Overview.md)
+- [crowd.agents README](source/extensions/crowd.agents/docs/README.md)
 
-- **[USD Viewer](./templates/apps/usd_viewer)**: A viewport-only template application that can be easily streamed and interacted with remotely, well-suited for streaming content to web pages.
+## Governing terms
 
-### Extensions
+The software and materials are governed by the
+[NVIDIA Software License Agreement](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the
+[Product-Specific Terms for NVIDIA Omniverse](https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-omniverse/).
 
-Enhance Omniverse capabilities with extension templates:
+The Omniverse Kit SDK may collect anonymous usage data; see
+[data collection details](readme-assets/additional-docs/data_collection_and_use.md).
 
-- **[Basic Python](./templates/extensions/basic_python)**: The minimal definition of an Omniverse Python Extension.
-
-- **[Python UI](./templates/extensions/python_ui)**: An extension that provides an easily extendable Python-based user interface.
-
-- **[Basic C++](./templates/extensions/basic_cpp)**: The minimal definition of an Omniverse C++ Extension.
-
-- **[Basic C++ w/ Python Bindings](./templates/extensions/basic_python_binding)**: The minimal definition of an Omniverse C++ Extension that also exposes a Python interface via Pybind11.
-
-   **Note for Windows C++ Developers** : This template requires `"platform:windows-x86_64".enabled` and `link_host_toolchain` within the `repo.toml` file be set to `true`. For additional C++ configuration information [see here](readme-assets/additional-docs/windows_developer_configuration.md).
-
-
-## Application Streaming
-
-The Omniverse Platform supports streaming Kit-based applications directly to a web browser. You can either manage your own deployment or use an NVIDIA-managed service:
-
-### Self-Managed
-- **Omniverse Kit App Streaming :** A reference implementation on GPU-enabled Kubernetes clusters for complete control over infrastructure and scalability.
-
-### NVIDIA-Managed
-- **NVIDIA Cloud Functions (NVCF):** Offloads hardware, streaming, and network complexities for secure, large scale deployments.
-
-[Configuring and packaging streaming-ready Kit applications](readme-assets/additional-docs/kit_app_streaming_config.md)
-
-### Deploying to NVIDIA DGX Cloud (DGXC)
-
-> ⚠️ **Planning to deploy on DGX Cloud?**
-> Applications deployed on NVIDIA DGX Cloud via NVCF need NVCF-compatible streaming configuration. The **NVCF Streaming** layer provides this out of the box, or you can create your own custom layer. Add layers during `template new` or later with `./repo.sh template modify` (Linux) or `.\repo.bat template modify` (Windows). Standard streaming configurations are not DGXC-compatible.
-
-See the [DGXC Deployment Guide](readme-assets/additional-docs/dgxc_nvcf_deployment.md) for configuration details and the [public DGXC documentation](https://docs.omniverse.nvidia.com/omniverse-dgxc/latest/) for deployment steps.
-
-
-## Tools
-
-The Kit SDK includes a suite of tools to aid in the development, testing, and deployment of your projects. For a more detailed overview of available tooling, see the [Kit SDK Tooling Guide](readme-assets/additional-docs/kit_app_template_tooling_guide.md).
-
-Here's a brief overview of some key tools:
-
-- **Help (`./repo.sh -h` or `.\repo.bat -h`):** Provides a list of available tools and their descriptions.
-
-- **Template Creation (`./repo.sh template` or `.\repo.bat template`):** Assists in starting a new project by generating a scaffold from a template application or extension.
-
-- **Build (`./repo.sh build` or `.\repo.bat build`):** Compiles your applications and extensions, preparing them for launch.
-
-- **Launch (`./repo.sh launch`or`.\repo.bat launch`):** Starts your compiled application or extension.
-
-- **Testing (`./repo.sh test` or `.\repo.bat test`):** Facilitates the execution of test suites for your extensions, ensuring code quality and functionality. See [Testing Applications and Extensions](readme-assets/additional-docs/testing_apps_and_extensions.md) for a detailed guide.
-
-- **Packaging (`./repo.sh package` or `.\repo.bat package`):** Aids in packaging your application for distribution, making it easier to share or deploy in cloud environments.
-
-## Governing Terms
-The software and materials are governed by the [NVIDIA Software License Agreement](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/) and the [Product-Specific Terms for NVIDIA Omniverse](https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-omniverse/).
-
-## Data Collection
-The Omniverse Kit SDK collects anonymous usage data to help improve software performance and aid in diagnostic purposes. Rest assured, no personal information such as user email, name or any other field is collected.
-
-To learn more about what data is collected, how we use it and how you can change the data collection setting [see details page](readme-assets/additional-docs/data_collection_and_use.md).
-
-
-## Additional Resources
-
-- [Kit SDK Companion Tutorial](https://docs.omniverse.nvidia.com/kit/docs/kit-app-template/latest/docs/intro.html)
+## Additional resources
 
 - [Usage and Troubleshooting](readme-assets/additional-docs/usage_and_troubleshooting.md)
-
-- [Developer Bundle Extensions](readme-assets/additional-docs/developer_bundle_extensions.md)
-
+- [Kit SDK Tooling Guide](readme-assets/additional-docs/kit_app_template_tooling_guide.md)
 - [Omniverse Kit SDK Manual](https://docs.omniverse.nvidia.com/kit/docs/kit-manual/latest/index.html)
-
-
-## Contributing
-
-We provide this source code as-is and are currently not accepting outside contributions.
