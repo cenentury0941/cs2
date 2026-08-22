@@ -20,5 +20,8 @@ HOST = os.environ.get("SLM_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SLM_PORT", "8080"))
 TEMPERATURE = float(os.environ.get("SLM_TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.environ.get("SLM_MAX_TOKENS", "100"))
+# Narrative summaries need more headroom than tiny intent JSON.
+SUMMARIZE_MAX_TOKENS = int(os.environ.get("SLM_SUMMARIZE_MAX_TOKENS", "256"))
+SUMMARIZE_TEMPERATURE = float(os.environ.get("SLM_SUMMARIZE_TEMPERATURE", "0.4"))
 
 ALLOWED_INTENTS = frozenset({"GO_TO_SEAT", "EXIT", "IDLE"})

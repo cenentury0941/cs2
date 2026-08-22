@@ -7,10 +7,22 @@ import os
 import threading
 from typing import List, Optional, Sequence
 
-from config import CUDA_MODEL_ID, MAX_TOKENS, TEMPERATURE
+from config import (
+    CUDA_MODEL_ID,
+    MAX_TOKENS,
+    SUMMARIZE_MAX_TOKENS,
+    SUMMARIZE_TEMPERATURE,
+    TEMPERATURE,
+)
 from decision_parse import fallback, parse_output
-from prompts import SYSTEM_PROMPT, build_user_prompt
-from schemas import AgentInput, Decision
+from prompts import (
+    SUMMARIZE_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    build_summarize_user_prompt,
+    build_user_prompt,
+)
+from schemas import AgentInput, Decision, SummarizeRequest, SummarizeResponse
+from summarize_parse import fallback_summary, summarize_or_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -113,10 +125,35 @@ class CudaWorker:
                 decisions.append(fallback(agent))
         return decisions
 
+    def summarize_one(self, req: SummarizeRequest) -> SummarizeResponse:
+        """Narrative summary of Agent Info snapshot + events; never raise."""
+        try:
+            raw = self._generate_chat(
+                SUMMARIZE_SYSTEM_PROMPT,
+                build_summarize_user_prompt(req),
+                max_new_tokens=SUMMARIZE_MAX_TOKENS,
+                temperature=SUMMARIZE_TEMPERATURE,
+                stop_strings=None,
+            )
+            summary = summarize_or_fallback(raw, req)
+        except Exception:
+            logger.exception(
+                "Summarize failed for agent %s; using fallback", req.agent_id
+            )
+            summary = fallback_summary(req.agent_id, req.snapshot, req.events)
+        return SummarizeResponse(
+            request_id=req.request_id,
+            agent_id=req.agent_id,
+            summary=summary,
+        )
+
     def _prompt_for(self, agent: AgentInput) -> str:
+        return self._chat_prompt(SYSTEM_PROMPT, build_user_prompt(agent))
+
+    def _chat_prompt(self, system: str, user: str) -> str:
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(agent)},
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ]
         return self._tokenizer.apply_chat_template(
             messages,
@@ -126,6 +163,49 @@ class CudaWorker:
 
     def _generate(self, agent: AgentInput) -> str:
         return self._generate_many([agent])[0]
+
+    def _generate_chat(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_new_tokens: int,
+        temperature: float,
+        stop_strings: Optional[List[str]],
+    ) -> str:
+        import torch
+
+        if not self._ready or self._model is None or self._tokenizer is None:
+            raise RuntimeError("Model is not ready")
+
+        prompt = self._chat_prompt(system, user)
+        inputs = self._tokenizer(prompt, return_tensors="pt")
+        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+        prompt_len = inputs["input_ids"].shape[-1]
+
+        gen_kwargs = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": temperature > 0,
+            "pad_token_id": self._tokenizer.pad_token_id,
+            "eos_token_id": self._tokenizer.eos_token_id,
+        }
+        if stop_strings:
+            gen_kwargs["stop_strings"] = stop_strings
+            gen_kwargs["tokenizer"] = self._tokenizer
+        if temperature > 0:
+            gen_kwargs["temperature"] = temperature
+
+        with self._lock:
+            with torch.inference_mode():
+                try:
+                    output_ids = self._model.generate(**inputs, **gen_kwargs)
+                except TypeError:
+                    gen_kwargs.pop("stop_strings", None)
+                    gen_kwargs.pop("tokenizer", None)
+                    output_ids = self._model.generate(**inputs, **gen_kwargs)
+
+        new_tokens = output_ids[0, prompt_len:]
+        return self._tokenizer.decode(new_tokens, skip_special_tokens=True)
 
     def _generate_many(self, agents: Sequence[AgentInput]) -> List[str]:
         import torch

@@ -1,4 +1,4 @@
-"""Request/response models for the frozen /v1/decide contract."""
+"""Request/response models for /v1/decide and /v1/summarize."""
 
 from __future__ import annotations
 
@@ -31,3 +31,20 @@ class Decision(BaseModel):
 class DecideResponse(BaseModel):
     request_id: str
     decisions: List[Decision]
+
+
+class SummarizeRequest(BaseModel):
+    """Payload mirroring Individual Agent Info (snapshot + state-change log)."""
+
+    request_id: str
+    agent_id: str
+    # Flat string fields from selected_agent_snapshot() when available.
+    snapshot: Dict[str, str] = Field(default_factory=dict)
+    # Newest-first display lines from state_event_lines_for_agent_or_sim().
+    events: List[str] = Field(default_factory=list)
+
+
+class SummarizeResponse(BaseModel):
+    request_id: str
+    agent_id: str
+    summary: str

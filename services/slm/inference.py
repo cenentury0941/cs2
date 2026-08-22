@@ -1,4 +1,4 @@
-"""Single mlx_lm worker: load once, generate constrained JSON."""
+"""Single mlx_lm worker: load once, generate constrained JSON / summaries."""
 
 from __future__ import annotations
 
@@ -7,10 +7,16 @@ import os
 import threading
 from typing import Optional, Sequence
 
-from config import MAX_TOKENS, MODEL_ID, TEMPERATURE
+from config import MAX_TOKENS, MODEL_ID, SUMMARIZE_MAX_TOKENS, SUMMARIZE_TEMPERATURE, TEMPERATURE
 from decision_parse import fallback, parse_output
-from prompts import SYSTEM_PROMPT, build_user_prompt
-from schemas import AgentInput, Decision
+from prompts import (
+    SUMMARIZE_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    build_summarize_user_prompt,
+    build_user_prompt,
+)
+from schemas import AgentInput, Decision, SummarizeRequest, SummarizeResponse
+from summarize_parse import fallback_summary, summarize_or_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +48,12 @@ class MlxWorker:
     def decide_one(self, agent: AgentInput) -> Decision:
         """Run inference for one agent; never raise — always return a Decision."""
         try:
-            raw = self._generate(agent)
+            raw = self._generate(
+                SYSTEM_PROMPT,
+                build_user_prompt(agent),
+                max_tokens=MAX_TOKENS,
+                temperature=TEMPERATURE,
+            )
             intent, destination = parse_output(raw, agent)
             return Decision(id=agent.id, intent=intent, destination=destination)
         except Exception:
@@ -53,7 +64,35 @@ class MlxWorker:
         """mlx path: still one generate per agent (no true batch API yet)."""
         return [self.decide_one(agent) for agent in agents]
 
-    def _generate(self, agent: AgentInput) -> str:
+    def summarize_one(self, req: SummarizeRequest) -> SummarizeResponse:
+        """Narrative summary of Agent Info snapshot + events; never raise."""
+        try:
+            raw = self._generate(
+                SUMMARIZE_SYSTEM_PROMPT,
+                build_summarize_user_prompt(req),
+                max_tokens=SUMMARIZE_MAX_TOKENS,
+                temperature=SUMMARIZE_TEMPERATURE,
+            )
+            summary = summarize_or_fallback(raw, req)
+        except Exception:
+            logger.exception(
+                "Summarize failed for agent %s; using fallback", req.agent_id
+            )
+            summary = fallback_summary(req.agent_id, req.snapshot, req.events)
+        return SummarizeResponse(
+            request_id=req.request_id,
+            agent_id=req.agent_id,
+            summary=summary,
+        )
+
+    def _generate(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
         from mlx_lm import generate
         from mlx_lm.sample_utils import make_sampler
 
@@ -61,22 +100,22 @@ class MlxWorker:
             raise RuntimeError("Model is not ready")
 
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(agent)},
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ]
         prompt = self._tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
         )
-        sampler = make_sampler(temp=TEMPERATURE)
+        sampler = make_sampler(temp=temperature)
 
         with self._lock:
             text = generate(
                 self._model,
                 self._tokenizer,
                 prompt=prompt,
-                max_tokens=MAX_TOKENS,
+                max_tokens=max_tokens,
                 verbose=False,
                 sampler=sampler,
             )

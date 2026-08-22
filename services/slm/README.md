@@ -11,10 +11,49 @@ this process never imports Kit or USD.
 | `GET /health` | Process up |
 | `GET /ready` | `200` only after the model is loaded |
 | `POST /v1/decide` | Batched agent decisions |
+| `POST /v1/summarize` | Narrative summary of one agent's Agent Info snapshot + state-change events |
 
 Allowed intents: `GO_TO_SEAT`, `EXIT`, `IDLE`.
 
-See repo root `agent.md` for the frozen request/response JSON.
+### `/v1/summarize`
+
+Request mirrors the Individual Agent Info panel:
+
+```json
+{
+  "request_id": "sum-1",
+  "agent_id": "Agent_001",
+  "snapshot": {
+    "id": "Agent_001",
+    "intent": "EXIT",
+    "goal": "Exit_A",
+    "assigned_seat": "Seat_012",
+    "exit_chosen": "Exit_A",
+    "fire_perceived": "yes",
+    "smoke_perceived": "no",
+    "at_destination": "no",
+    "position": "(1.00, 0.00, 2.00)",
+    "destination": "(10.00, 0.00, 0.00)",
+    "waypoints_left": "3"
+  },
+  "events": [
+    "t=12.3s  Agent_001: saw fire",
+    "t=10.0s  Agent_001: intent — GO_TO_SEAT → EXIT"
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "request_id": "sum-1",
+  "agent_id": "Agent_001",
+  "summary": "Agent_001 is evacuating toward Exit_A after perceiving fire…"
+}
+```
+
+See repo root `agent.md` for the frozen decide request/response JSON.
 
 ## Mac setup (one instance)
 
@@ -33,7 +72,8 @@ Environment overrides:
 
 - `SLM_MODEL_ID` — default `mlx-community/Phi-4-mini-instruct-4bit`
 - `SLM_HOST` / `SLM_PORT` — bind address (default `127.0.0.1:8080`)
-- `SLM_TEMPERATURE` / `SLM_MAX_TOKENS` — sampling (default `0.2` / `100`)
+- `SLM_TEMPERATURE` / `SLM_MAX_TOKENS` — sampling for `/v1/decide` (default `0.2` / `100`)
+- `SLM_SUMMARIZE_TEMPERATURE` / `SLM_SUMMARIZE_MAX_TOKENS` — sampling for `/v1/summarize` (default `0.4` / `256`)
 
 ## Smoke test
 
@@ -90,7 +130,7 @@ Rule + parse unit tests (no server):
 
 ```bash
 cd services/slm
-python -m unittest tests.test_decision_parse -v
+python -m unittest tests.test_decision_parse tests.test_summarize -v
 ```
 
 Live model behavior across agent states (server must be up):

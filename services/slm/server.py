@@ -1,4 +1,4 @@
-"""FastAPI inference service: /health, /ready, /v1/decide."""
+"""FastAPI inference service: /health, /ready, /v1/decide, /v1/summarize."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from schemas import DecideRequest, DecideResponse, Decision
+from schemas import DecideRequest, DecideResponse, SummarizeRequest, SummarizeResponse
 
 logger = logging.getLogger(__name__)
 
@@ -56,3 +56,9 @@ def decide(body: DecideRequest) -> DecideResponse:
     else:
         decisions = [worker.decide_one(agent) for agent in body.agents]
     return DecideResponse(request_id=body.request_id, decisions=decisions)
+
+
+@app.post("/v1/summarize", response_model=SummarizeResponse)
+def summarize(body: SummarizeRequest) -> SummarizeResponse:
+    """Summarize Individual Agent Info snapshot + state-change events."""
+    return worker.summarize_one(body)
