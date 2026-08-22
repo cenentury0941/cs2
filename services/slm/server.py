@@ -20,11 +20,22 @@ if _backend in ("cuda", "torch", "aws"):
 else:
     from inference import worker
 
+from openrouter import summarizer as openrouter_summarizer
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting SLM worker load…")
     worker.load()
+    if openrouter_summarizer.is_configured:
+        logger.info(
+            "OpenRouter summarization ready (model=%s)",
+            openrouter_summarizer.model,
+        )
+    else:
+        logger.warning(
+            "OpenRouter API key missing — /v1/summarize will use the local model"
+        )
     yield
 
 
@@ -60,5 +71,7 @@ def decide(body: DecideRequest) -> DecideResponse:
 
 @app.post("/v1/summarize", response_model=SummarizeResponse)
 def summarize(body: SummarizeRequest) -> SummarizeResponse:
-    """Summarize Individual Agent Info snapshot + state-change events."""
+    """Summarize Individual Agent Info via OpenRouter when configured."""
+    if openrouter_summarizer.is_configured:
+        return openrouter_summarizer.summarize(body)
     return worker.summarize_one(body)

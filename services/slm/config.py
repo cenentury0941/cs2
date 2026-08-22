@@ -24,4 +24,13 @@ MAX_TOKENS = int(os.environ.get("SLM_MAX_TOKENS", "100"))
 SUMMARIZE_MAX_TOKENS = int(os.environ.get("SLM_SUMMARIZE_MAX_TOKENS", "256"))
 SUMMARIZE_TEMPERATURE = float(os.environ.get("SLM_SUMMARIZE_TEMPERATURE", "0.4"))
 
+# OpenRouter — used only for /v1/summarize (decide stays on local mlx/CUDA).
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_BASE_URL = os.environ.get(
+    "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+).rstrip("/")
+# Accept either openai/gpt-5.6-luna or openai.gpt-5.6-luna
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openai.gpt-5.6-luna").strip()
+OPENROUTER_TIMEOUT_S = float(os.environ.get("OPENROUTER_TIMEOUT_S", "60"))
+
 ALLOWED_INTENTS = frozenset({"GO_TO_SEAT", "EXIT", "IDLE"})

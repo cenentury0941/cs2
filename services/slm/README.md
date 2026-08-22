@@ -11,11 +11,17 @@ this process never imports Kit or USD.
 | `GET /health` | Process up |
 | `GET /ready` | `200` only after the model is loaded |
 | `POST /v1/decide` | Batched agent decisions |
-| `POST /v1/summarize` | Narrative summary of one agent's Agent Info snapshot + state-change events |
+| `POST /v1/summarize` | Narrative summary of one agent's Agent Info snapshot + events (**OpenRouter** when configured; else local model) |
 
 Allowed intents: `GO_TO_SEAT`, `EXIT`, `IDLE`.
 
-### `/v1/summarize`
+### `/v1/summarize` (OpenRouter)
+
+Decide stays on the local Phi worker. Summaries use OpenRouter when a key is available:
+
+- Env: `OPENROUTER_API_KEY`
+- Or file: repo-root `openrouter_api_key.txt` (`API Key: sk-or-v1-…`)
+- Model default: `openai.gpt-5.6-luna` → API id `openai/gpt-5.6-luna` (`OPENROUTER_MODEL`)
 
 Request mirrors the Individual Agent Info panel:
 
@@ -74,6 +80,9 @@ Environment overrides:
 - `SLM_HOST` / `SLM_PORT` — bind address (default `127.0.0.1:8080`)
 - `SLM_TEMPERATURE` / `SLM_MAX_TOKENS` — sampling for `/v1/decide` (default `0.2` / `100`)
 - `SLM_SUMMARIZE_TEMPERATURE` / `SLM_SUMMARIZE_MAX_TOKENS` — sampling for `/v1/summarize` (default `0.4` / `256`)
+- `OPENROUTER_API_KEY` — required for hosted summaries (else local model)
+- `OPENROUTER_MODEL` — default `openai.gpt-5.6-luna`
+- `OPENROUTER_BASE_URL` / `OPENROUTER_TIMEOUT_S` — default OpenRouter API + 60s
 
 ## Smoke test
 
@@ -130,7 +139,7 @@ Rule + parse unit tests (no server):
 
 ```bash
 cd services/slm
-python -m unittest tests.test_decision_parse tests.test_summarize -v
+python -m unittest tests.test_decision_parse tests.test_summarize tests.test_openrouter -v
 ```
 
 Live model behavior across agent states (server must be up):

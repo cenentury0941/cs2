@@ -49,5 +49,9 @@ services/slm/.venv-cuda/
 **/__pycache__/
 .env
 
+# OpenRouter credentials (never commit)
+openrouter_api_key.txt
+**/openrouter_api_key.txt
+
 # Growing SLM HTTP exchange dump (local reference)
 context/slm_exchange_log.txt
