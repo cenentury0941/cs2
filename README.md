@@ -25,6 +25,43 @@ Built on NVIDIA Omniverse / Kit.
 The goal is to answer questions like: *Will people reach seats smoothly? If
 there is a fire, do they evacuate in time? Which layout is safer?*
 
+## Monetization routes
+
+SimulCrowd fits a **B2B subscription** model: organizations pay for ongoing access
+to plan, simulate, and review crowd scenarios — not a one-off consumer app.
+
+### Who would subscribe
+
+| Customer | Why they pay |
+|----------|--------------|
+| **Venue operators** (stadiums, arenas, theatres, malls) | Test seating maps and exit plans before events and renovations |
+| **Event organisers & promoters** | Compare layouts for concerts, conferences, and festivals; reduce bottlenecks |
+| **Architects & urban / city planners** | Validate circulation and egress while the design can still change |
+| **Fire / safety consultants & insurers** | Run evacuation scenarios and document predicted crowd risk |
+| **Public agencies & emergency services** | Rehearse building and district evacuations without disrupting the real site |
+| **Universities & training programmes** | Teach crowd dynamics and safety planning in a shared classroom environment |
+
+### What the subscription is for
+
+| Offering | What the customer gets |
+|----------|------------------------|
+| **Workspace seats** | Named users who can load venues, run sims, and share results with stakeholders |
+| **Venue / project slots** | Stored layouts and scenarios (normal flow + fire/evac variants) per site |
+| **Simulation capacity** | Larger crowds, more runs, and longer planning sessions under the plan |
+| **Hosted AI decisions** | Cloud AI for per-person choices and agent summaries (usage or tier limits) |
+| **Scenario packs** | Pre-built templates (arena seating, lobby egress, conference hall) |
+| **Collaboration & export** | Shared reviews, status logs, and reports for clients or compliance |
+
+### How packaging could look
+
+- **Team** — small venues / planners: limited seats, a few venues, rule-based sims
+- **Professional** — event and safety firms: more projects, hosted AI, scenario packs
+- **Enterprise** — operators and agencies: SSO, private cloud / on-prem AI, audit
+  exports, training workshops
+
+**Add-ons** (one-time or usage): custom venue import, on-site training, dedicated
+GPU inference, white-label demos for client pitches.
+
 <p align="center">
   <img src="images/evacuation-simulation.jpeg" alt="SimulCrowd fire evacuation with agents moving to exits and Individual Agent Info" width="100%" />
 </p>
