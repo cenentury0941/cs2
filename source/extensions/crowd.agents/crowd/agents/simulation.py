@@ -22,6 +22,7 @@ from .ai import (
     RemoteSLMDecisionEngine,
     RuleBasedDecisionEngine,
     agent_to_slm_dict,
+    local_agent_summary_fallback,
 )
 from .fire import FIRE_FOV_DEG, FIRE_VIEW_RANGE_M, FireSystem
 from .inspect import AgentInspectPicker, pick_frontmost_along_ray
@@ -93,6 +94,11 @@ class Simulation:
         self._slm_mode_label = "rules"
         self._slm_ui_sync_requested = False
         self._slm_throttled = False
+        self._summary_lock = threading.Lock()
+        self._summary_inflight = False
+        self._summary_agent_id: Optional[str] = None
+        self._summary_text = ""
+        self._summary_seq = 0
         self._status = (
             "Ready — bake NavMesh, Spawn Agents (uses Spawn + Seat_XXX), Run."
         )
@@ -371,12 +377,81 @@ class Simulation:
         """Set inspected agent for the info panel (not USD selection)."""
         if agent_id is None:
             self._selected_agent_id = None
+            self.clear_agent_summary()
             self.refresh_visuals()
             return
         if any(a.agent_id == agent_id for a in self._agents):
+            if agent_id != self._selected_agent_id:
+                self.clear_agent_summary()
             self._selected_agent_id = agent_id
             self._clear_agent_usd_selection()
             self.refresh_visuals()
+
+    @property
+    def agent_summary_text(self) -> str:
+        with self._summary_lock:
+            return self._summary_text
+
+    @property
+    def agent_summary_inflight(self) -> bool:
+        with self._summary_lock:
+            return self._summary_inflight
+
+    def clear_agent_summary(self) -> None:
+        with self._summary_lock:
+            self._summary_text = ""
+            self._summary_agent_id = None
+            self._summary_seq += 1
+            self._summary_inflight = False
+
+    def request_selected_agent_summary(self) -> None:
+        """Background POST /v1/summarize for the inspected agent."""
+        snap = self.selected_agent_snapshot()
+        if snap is None:
+            with self._summary_lock:
+                self._summary_text = "Select an agent to summarize."
+            return
+
+        agent_id = snap["id"]
+        events = self.state_event_lines_for_agent_or_sim(agent_id)
+        snapshot = dict(snap)
+
+        with self._summary_lock:
+            if self._summary_inflight and self._summary_agent_id == agent_id:
+                return
+            self._summary_seq += 1
+            seq = self._summary_seq
+            self._summary_inflight = True
+            self._summary_agent_id = agent_id
+            self._summary_text = "Summarizing…"
+
+        slm = self._slm
+        request_id = f"sum-{agent_id}-{int(self._sim_time * 10)}"
+
+        def _worker() -> None:
+            text: str
+            try:
+                text = slm.summarize(
+                    agent_id=agent_id,
+                    snapshot=snapshot,
+                    events=events,
+                    request_id=request_id,
+                    require_ready=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                text = (
+                    f"(SLM summarize failed: {exc}) "
+                    + local_agent_summary_fallback(agent_id, snapshot, events)
+                )
+            with self._summary_lock:
+                if seq != self._summary_seq:
+                    return
+                self._summary_text = text
+                self._summary_inflight = False
+
+        threading.Thread(
+            target=_worker, name=f"crowd-slm-sum-{agent_id}", daemon=True
+        ).start()
 
     def set_hovered_agent(self, agent_id: Optional[str]) -> None:
         if agent_id == self._hovered_agent_id:
@@ -436,6 +511,7 @@ class Simulation:
             self._slm_pending = None
             self._slm_pending_error = None
         self._state_events.clear()
+        self.clear_agent_summary()
         self._sim_time = 0.0
         self._running = False
 
@@ -763,6 +839,7 @@ class Simulation:
                     self._slm_pending = None
                     self._slm_pending_error = None
                 self._state_events.clear()
+                self.clear_agent_summary()
                 self._sim_time = 0.0
                 clear_fov_wireframe()
                 self.load_slm_settings_from_stage()
@@ -973,6 +1050,7 @@ class Simulation:
             self._slm_pending = None
             self._slm_pending_error = None
         self._state_events.clear()
+        self.clear_agent_summary()
         self._sim_time = 0.0
         clear_fov_wireframe()
         if not agents:
@@ -1439,6 +1517,7 @@ class Simulation:
             self._slm_pending = None
             self._slm_pending_error = None
         self._state_events.clear()
+        self.clear_agent_summary()
         self._sim_time = 0.0
 
     def _lift_point(self, floor_point: Vec3, amount: float) -> Vec3:

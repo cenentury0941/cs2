@@ -452,3 +452,141 @@ class RemoteSLMDecisionEngine(DecisionEngine):
 
         self._last_error = None
         return out
+
+    def summarize(
+        self,
+        *,
+        agent_id: str,
+        snapshot: Optional[Dict[str, str]] = None,
+        events: Optional[List[str]] = None,
+        request_id: Optional[str] = None,
+        require_ready: bool = True,
+    ) -> str:
+        """POST /v1/summarize for one agent's Agent Info panel content.
+
+        Raises on transport/HTTP failure. On empty model text, returns a
+        local fallback built from snapshot + events.
+        """
+        snap = dict(snapshot or {})
+        ev = list(events or [])
+        rid = request_id or f"sum-{agent_id}"
+
+        if require_ready and not self._last_ready_ok:
+            if not self.check_ready():
+                raise RuntimeError(self._last_error or "SLM not ready")
+
+        payload = {
+            "request_id": rid,
+            "agent_id": agent_id,
+            "snapshot": snap,
+            "events": ev,
+        }
+        body = json.dumps(payload).encode("utf-8")
+        url = f"{self.base_url}/v1/summarize"
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                raw = resp.read().decode("utf-8")
+                status = int(resp.status)
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:200]
+            except Exception:  # noqa: BLE001
+                pass
+            self._last_error = f"/v1/summarize HTTP {exc.code}: {detail}"
+            append_slm_exchange_log(
+                "POST /v1/summarize",
+                url=url,
+                request_body=payload,
+                status=int(exc.code),
+                response_body=detail or None,
+                error=self._last_error,
+                log_path=self.log_path,
+            )
+            raise RuntimeError(self._last_error) from exc
+        except Exception as exc:  # noqa: BLE001
+            self._last_error = f"/v1/summarize failed: {exc}"
+            append_slm_exchange_log(
+                "POST /v1/summarize",
+                url=url,
+                request_body=payload,
+                error=self._last_error,
+                log_path=self.log_path,
+            )
+            raise RuntimeError(self._last_error) from exc
+
+        if not (200 <= status < 300):
+            self._last_error = f"/v1/summarize HTTP {status}"
+            append_slm_exchange_log(
+                "POST /v1/summarize",
+                url=url,
+                request_body=payload,
+                status=status,
+                response_body=raw,
+                error=self._last_error,
+                log_path=self.log_path,
+            )
+            raise RuntimeError(self._last_error)
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self._last_error = "invalid JSON from /v1/summarize"
+            append_slm_exchange_log(
+                "POST /v1/summarize",
+                url=url,
+                request_body=payload,
+                status=status,
+                response_body=raw,
+                error=self._last_error,
+                log_path=self.log_path,
+            )
+            raise RuntimeError(self._last_error) from exc
+
+        append_slm_exchange_log(
+            "POST /v1/summarize",
+            url=url,
+            request_body=payload,
+            status=status,
+            response_body=data,
+            log_path=self.log_path,
+        )
+
+        summary = ""
+        if isinstance(data, dict):
+            summary = str(data.get("summary") or "").strip()
+        if not summary:
+            summary = local_agent_summary_fallback(agent_id, snap, ev)
+        self._last_error = None
+        return summary
+
+
+def local_agent_summary_fallback(
+    agent_id: str,
+    snapshot: Optional[Dict[str, str]] = None,
+    events: Optional[List[str]] = None,
+) -> str:
+    """Offline / error fallback matching SLM summarize_parse.fallback_summary."""
+    snap = snapshot or {}
+    intent = snap.get("intent") or "unknown"
+    goal = snap.get("goal") or "—"
+    parts = [f"{agent_id} currently has intent {intent} with goal {goal}."]
+    hazards = []
+    if snap.get("fire_perceived") == "yes":
+        hazards.append("fire")
+    if snap.get("smoke_perceived") == "yes":
+        hazards.append("smoke")
+    if hazards:
+        parts.append(f"They have perceived {' and '.join(hazards)}.")
+    ev = list(events or [])
+    if ev:
+        parts.append(f"Recent state changes: {'; '.join(ev[:5])}.")
+    else:
+        parts.append("No discrete state changes are recorded yet.")
+    return " ".join(parts)

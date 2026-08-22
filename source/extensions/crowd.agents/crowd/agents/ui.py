@@ -320,6 +320,7 @@ class AgentInfoWindow:
         self._hint_label: Optional[ui.Label] = None
         self._value_labels: Dict[str, ui.Label] = {}
         self._log_label: Optional[ui.Label] = None
+        self._summary_label: Optional[ui.Label] = None
         self._window = ui.Window(AGENT_INFO_TITLE, width=320, height=600)
         self._build()
         self.refresh()
@@ -369,6 +370,25 @@ class AgentInfoWindow:
                         word_wrap=True,
                         style={"color": 0xFFCCCCCC, "font_size": 12},
                     )
+                    ui.Spacer(height=10)
+                    ui.Label("SLM summary", height=0, style={"font_size": 14})
+                    ui.Label(
+                        "Uses the hosted SLM URL from Crowd Sim (Check Ready first).",
+                        height=0,
+                        word_wrap=True,
+                        style={"color": 0xFF888888, "font_size": 11},
+                    )
+                    ui.Button(
+                        "Summarize agent",
+                        clicked_fn=self._on_summarize,
+                        height=28,
+                    )
+                    self._summary_label = ui.Label(
+                        "(click Summarize after selecting an agent)",
+                        height=0,
+                        word_wrap=True,
+                        style={"color": 0xFFCCCCCC, "font_size": 12},
+                    )
 
     def refresh(self) -> None:
         snap = self._simulation.selected_agent_snapshot()
@@ -382,6 +402,7 @@ class AgentInfoWindow:
             for label in self._value_labels.values():
                 label.text = "—"
             self._refresh_log(agent_id=None)
+            self._refresh_summary()
             return
 
         if self._hint_label:
@@ -391,6 +412,7 @@ class AgentInfoWindow:
             if label is not None:
                 label.text = snap.get(key, "—")
         self._refresh_log(agent_id=snap["id"])
+        self._refresh_summary()
 
     def _refresh_log(self, agent_id: Optional[str]) -> None:
         if not self._log_label:
@@ -408,8 +430,22 @@ class AgentInfoWindow:
         if self._log_label.text != text:
             self._log_label.text = text
 
+    def _refresh_summary(self) -> None:
+        if not self._summary_label:
+            return
+        text = self._simulation.agent_summary_text.strip()
+        if not text:
+            text = "(click Summarize after selecting an agent)"
+        if self._summary_label.text != text:
+            self._summary_label.text = text
+
+    def _on_summarize(self) -> None:
+        self._simulation.request_selected_agent_summary()
+        self._refresh_summary()
+
     def destroy(self) -> None:
         self._window = None
         self._hint_label = None
         self._value_labels.clear()
         self._log_label = None
+        self._summary_label = None
