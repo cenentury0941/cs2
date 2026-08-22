@@ -1,97 +1,87 @@
 # SimulCrowd
 
-NVIDIA Omniverse / Kit application for intent-driven venue crowd simulation.
-Agents walk a NavMesh to seats, perceive fire and smoke, and evacuate through
-exits. High-level decisions can come from a local rule engine or a hosted
-small language model (SLM) over HTTP — Omniverse never loads model weights.
+SimulCrowd helps you **see how crowds of people move through a space** — seating,
+corridors, exits — and how they react when something goes wrong. Load a real
+venue layout, fill it with simulated people, and watch them find seats, react
+to hazards, and evacuate.
 
-Built on the Omniverse Kit App Template / Kit Base Editor stack.
+Built on NVIDIA Omniverse / Kit.
 
-## Features
+## Use cases
 
-**Venue & navigation**
-- Import venue geometry (GLB → USD) and bake a walkable NavMesh
-- Scene contract: spawn plane, numbered seats, exits, and Nav include volumes
-- Spawn 1–100 agents with unique seat assignment and path planning on Run
-- Corridor lane jitter, waypoint skip/replan, and simple agent–agent separation
+| Use case | How SimulCrowd helps |
+|----------|----------------------|
+| **Emulating group behaviour** | Simulated people walk, choose goals, keep distance from each other, and react individually — not as one rigid mass. |
+| **Building evacuation planning** | Place a fire or hazard and see who notices, which exits they choose, and where bottlenecks form. |
+| **City / venue planning** | Test how seating, corridors, and exits shape flow before construction or renovation. |
+| **Event layout planning** | Try alternative seating maps and exit arrangements for concerts, conferences, or stadiums. |
+| **Crowd safety prediction** | Spot crowding, slow exits, and dead zones early — while you can still change the design. |
 
-**Perception & evacuation**
-- Place a fire trigger in the viewport (hover preview, click-to-place)
-- Per-agent FOV / range / mesh line-of-sight for fire and smoke (sticky once seen)
-- Intent switch to EXIT only for agents that actually perceive the hazard
-- Debug colors: blue toward seat, red toward exit
+The goal is to answer questions like: *Will people reach seats smoothly? If
+there is a fire, do they evacuate in time? Which layout is safer?*
 
-**Operator tools**
-- Crowd Sim control panel (open venue, NavMesh, spawn, run/pause/reset, fire, SLM)
-- Click/hover inspect for Individual Agent Info (intent, goal, seat, exit,
-  fire/smoke, position, waypoints)
-- Selected-agent FOV wireframe and state-change event log for the run
+## What you can do
 
-**AI / decisioning**
-- Pluggable decision engines: rule-based (default) or remote SLM
-- Batched HTTP intents with fallback to rules if the SLM is down
-- Optional natural-language agent summaries (OpenRouter or local model)
+- **Import a venue** — bring in a 3D layout of a hall, arena, or building floor
+- **Fill it with people** — spawn dozens of agents who walk to assigned seats
+- **Trigger a hazard** — place fire in the scene; only people who can see it
+  start evacuating
+- **Inspect anyone** — click a person to see what they are doing, where they
+  are going, and what they have noticed
+- **Compare decisions** — use simple rules, or optional AI that decides
+  per-person whether to stay seated, go to a seat, or exit
 
-## Architecture
-
-SimulCrowd splits **simulation** (inside Kit) from **inference** (outside Kit):
+## How it works (in plain terms)
 
 ```text
-┌─────────────────────────────────────────────────────────┐
-│  Omniverse Kit — SimulCrowd (crowd.sim.kit)             │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │  crowd.agents                                     │  │
-│  │  · Perception (FOV / LOS / sticky memory)         │  │
-│  │  · DecisionEngine (rules  or  RemoteSLM client)   │  │
-│  │  · Navigation (NavMesh paths, separation, USD)    │  │
-│  │  · Fire + UI / agent inspect                      │  │
-│  └───────────────────────┬───────────────────────────┘  │
-└──────────────────────────┼──────────────────────────────┘
-                           │  HTTP  /v1/decide  (batch)
-                           │  HTTP  /v1/summarize
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│  services/slm  (standalone process)                     │
-│  Mac: mlx-lm (Phi-4-mini)  ·  AWS: CUDA transformers    │
-│  Optional: OpenRouter for /v1/summarize                 │
-└─────────────────────────────────────────────────────────┘
+  Your venue (3D layout)
+           │
+           ▼
+  ┌────────────────────────────┐
+  │  SimulCrowd (Omniverse)    │  ← people walk, see hazards, evacuate
+  │  Crowd simulation + UI     │
+  └─────────────┬──────────────┘
+                │  optional: ask AI what each person should do next
+                ▼
+  ┌────────────────────────────┐
+  │  AI decision service       │  ← runs separately (laptop GPU or cloud)
+  └────────────────────────────┘
 ```
 
-**Per-frame loop (Kit):** perception updates locally every frame → navigation
-follows the current intent → decisions are gated (not every frame when using
-SLM). Between SLM ticks, agents keep the last intent while NavMesh motion
-continues.
+1. **The 3D app** owns the venue, movement, vision (who can see fire/smoke),
+   and the operator controls.
+2. **Decisions** — sit / walk to seat / exit — can come from built-in rules or
+   from a small language model that reasons about each person’s situation.
+3. If the AI service is offline, simulation continues with the rule engine so
+   demos and planning sessions are not blocked.
 
-**Labour split:** Kit owns scene, perception scalars, pathing, and USD sync.
-The SLM receives compact per-agent JSON (ids, bools, goals — no meshes) and
-returns only high-level intents. On timeout or `/ready` failure, Kit falls
-back to `RuleBasedDecisionEngine`.
+You do not need to understand the networking details to use the product; the
+Crowd Sim panel has **Use hosted SLM** when you want AI-driven behaviour.
 
-## AI features
+## AI in SimulCrowd
 
-| Capability | How it works |
-|------------|--------------|
-| **Rule-based decisions** | Local engine in `crowd.agents`; default when SLM is off or unreachable |
-| **Hosted SLM decisions** | `POST /v1/decide` batches agents; model chooses `GO_TO_SEAT`, `EXIT`, or `IDLE` from perception + goals |
-| **Perception-driven prompts** | Decides fire on perception *changes* (and batch size), not a blind all-agents poll every frame |
-| **Safe batching** | One bad agent parse never fails the whole batch; soft/hard motion throttle under SLM backlog |
-| **Agent summaries** | `POST /v1/summarize` turns an Agent Info snapshot + events into operator-facing narrative (OpenRouter when configured, else local Phi) |
-| **Deploy options** | Mac Apple Silicon via mlx-lm, or AWS Ubuntu CUDA (`Phi-4-mini`); LAN or SSM port-forward to Windows Kit |
+AI is optional. When enabled, it supports the use cases above by giving each
+simulated person a more human-like choice under pressure:
 
-Allowed intents are frozen: **`GO_TO_SEAT`**, **`EXIT`**, **`IDLE`**. See
-`services/slm/README.md` and `context/Omniverse_SLM_Technical_Flow.txt` for
-the HTTP contract and end-to-end flow.
+- **Per-person decisions** — go to seat, exit, or wait — based on what that
+  person has seen (fire, smoke, exits, whether they reached their goal)
+- **Natural-language summaries** — turn one agent’s live status into a short
+  explanation an operator can read (useful in demos and reviews)
+- **Scales with the crowd** — many agents can be decided together in batches;
+  the 3D app stays responsive
+
+Technical setup for the AI service lives in [`services/slm/README.md`](services/slm/README.md).
 
 ## Repository layout
 
 | Path | Purpose |
 |------|---------|
-| `source/apps/crowd.sim.kit` | SimulCrowd Kit application |
-| `source/extensions/crowd.agents/` | Crowd sim extension (UI, NavMesh, fire, SLM client) |
-| `services/slm/` | Standalone HTTP SLM inference (Mac mlx / AWS CUDA) |
-| `context/` | Setup notes (LAN SLM, Omniverse↔SLM flow, progress) |
-| `templates/` | Upstream Kit app/extension templates (scaffolding) |
-| `tools/` | Repo tooling |
+| `source/apps/crowd.sim.kit` | SimulCrowd application |
+| `source/extensions/crowd.agents/` | Crowd simulation, UI, fire, AI client |
+| `services/slm/` | Optional AI decision / summary service |
+| `context/` | Connection and project notes |
+| `templates/` | Upstream Omniverse templates |
+| `tools/` | Build / repo tooling |
 
 ## Prerequisites
 
@@ -102,8 +92,8 @@ the HTTP contract and end-to-end flow.
   [Windows developer configuration](readme-assets/additional-docs/windows_developer_configuration.md)
   if building C++ on Windows)
 
-Apple Silicon is used only for the optional Mac SLM service (`services/slm`),
-not for running the Omniverse app.
+The optional AI service can also run on Apple Silicon; the Omniverse app itself
+needs a Windows or Linux NVIDIA machine.
 
 ## Quick start
 
@@ -134,35 +124,30 @@ not for running the Omniverse app.
 Select **SimulCrowd** / `crowd.sim`. First startup can take several minutes
 while shaders compile.
 
-### Typical workflow
+### Typical planning session
 
 In the Crowd Sim panel:
 
 1. **Open Venue** → **Generate NavMesh** → **Spawn Agents**
-2. Click an agent to inspect state
-3. **Run** → agents walk to seats
-4. **Start Fire** (click to place) → agents that see fire/smoke exit
-5. Optionally enable **Use hosted SLM**, set the base URL, **Check Ready**, then Run
+2. Click a person to inspect them
+3. **Run** — people walk to seats (normal event flow)
+4. **Start Fire** — place a hazard and watch who evacuates and where
+5. Optionally enable **Use hosted SLM** for AI-driven choices, then Run again
 
-Scene naming for venues:
+For custom venues, name seats, exits, and walkable areas consistently
+(`Seat_001`…, `Exit_A` / `Exit_B`, spawn plane, nav volumes). Details are in
+the extension docs linked below.
 
-- `Spawn` — spawn plane
-- `Seat_001` … `Seat_100` — seat planes
-- `Exit_A`, `Exit_B` — exits
-- `Nav_001` / `Nav.001` … — converted to NavMesh include volumes
+## Optional AI service
 
-## Hosted SLM (optional)
-
-Decisions stay in Kit by default (rule-based). For SLM-backed intents, run the
-standalone service and point the Crowd Sim panel at it:
+Rules work out of the box. For AI-backed decisions:
 
 ```bash
 cd services/slm
-# see services/slm/README.md for Mac (mlx) or AWS (CUDA) setup
+# see services/slm/README.md for Mac or cloud GPU setup
 ```
 
-Contract: `GET /health`, `GET /ready`, `POST /v1/decide`, `POST /v1/summarize`.
-LAN wiring notes: `context/SLM_LAN_Connection.txt`.
+LAN notes: `context/SLM_LAN_Connection.txt`.
 
 ## Extension docs
 
