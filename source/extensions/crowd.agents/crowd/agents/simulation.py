@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 import threading
 from typing import Dict, List, Optional, Set, Tuple
@@ -21,6 +22,7 @@ from .ai import (
     DecisionEngine,
     RemoteSLMDecisionEngine,
     RuleBasedDecisionEngine,
+    _find_repo_root,
     agent_to_slm_dict,
     local_agent_summary_fallback,
 )
@@ -52,6 +54,14 @@ SLM_THROTTLE_MIN_ENTER = 8
 SLM_THROTTLE_MAX_SOFT_SLOWDOWN = 0.25
 Vec3 = Tuple[float, float, float]
 PerceptionFingerprint = Tuple[bool, bool, bool, bool, bool]
+
+
+def venues_directory() -> str:
+    """Checkout ``venues/`` folder, so Open Venue starts on stages committed with the repo."""
+    path = os.path.join(_find_repo_root(), "venues")
+    if os.path.isdir(path):
+        return path.replace("\\", "/")
+    return ""
 
 
 def _is_agent_prim_path(path: str) -> bool:
@@ -849,7 +859,7 @@ class Simulation:
                 self._status = f"Failed to open: {path}"
                 carb.log_error(self._status)
 
-        importer.show_window(
+        show_kwargs = dict(
             title="Open Venue",
             import_button_label="Open",
             import_handler=_on_import,
@@ -862,6 +872,10 @@ class Simulation:
                 (".gltf", "glTF"),
             ],
         )
+        venues = venues_directory()
+        if venues:
+            show_kwargs["filename_url"] = venues if venues.endswith("/") else f"{venues}/"
+        importer.show_window(**show_kwargs)
         self._status = "Select a venue file…"
 
     def spawn_test_cube(self) -> None:

@@ -124,6 +124,7 @@ Technical setup for the AI service lives in [`services/slm/README.md`](services/
 
 | Path | Purpose |
 |------|---------|
+| `venues/` | Venue USD stages (`.usd`, `.usda`, `.usdc`, `.usdz`) committed with the repo |
 | `source/apps/crowd.sim.kit` | SimulCrowd application |
 | `source/extensions/crowd.agents/` | Crowd simulation, UI, fire, AI client |
 | `services/slm/` | AI decision / summary service |
@@ -178,7 +179,7 @@ while shaders compile.
 In the Crowd Sim panel:
 
 1. Start the AI service (see below), then enable **Use hosted SLM**
-2. **Open Venue** → **Generate NavMesh** → **Spawn Agents**
+2. **Open Venue** (starts in `venues/`) → **Generate NavMesh** → **Spawn Agents**
 3. Click a person to inspect them
 4. **Run** — people walk to seats (normal event flow)
 5. **Start Fire** — place a hazard and watch who evacuates and where
